@@ -65,46 +65,8 @@ export const enum SubscriptionState {
 	Paid,
 }
 
-export function computeSubscriptionState(subscription: Optional<Subscription, 'state'>): SubscriptionState {
-	const {
-		account,
-		plan: { actual, effective },
-		previewTrial: preview,
-	} = subscription;
-
-	if (account?.verified === false) return SubscriptionState.VerificationRequired;
-
-	if (actual.id === effective.id) {
-		switch (effective.id) {
-			case SubscriptionPlanId.Free:
-				return preview == null ? SubscriptionState.Free : SubscriptionState.FreePreviewTrialExpired;
-
-			case SubscriptionPlanId.FreePlus:
-				return SubscriptionState.FreePlusTrialExpired;
-
-			case SubscriptionPlanId.Pro:
-			case SubscriptionPlanId.Teams:
-			case SubscriptionPlanId.Enterprise:
-				return SubscriptionState.Paid;
-		}
-	}
-
-	switch (effective.id) {
-		case SubscriptionPlanId.Free:
-			return preview == null ? SubscriptionState.Free : SubscriptionState.FreeInPreviewTrial;
-
-		case SubscriptionPlanId.FreePlus:
-			return SubscriptionState.FreePlusTrialExpired;
-
-		case SubscriptionPlanId.Pro:
-			return actual.id === SubscriptionPlanId.Free
-				? SubscriptionState.FreeInPreviewTrial
-				: SubscriptionState.FreePlusInTrial;
-
-		case SubscriptionPlanId.Teams:
-		case SubscriptionPlanId.Enterprise:
-			return SubscriptionState.Paid;
-	}
+export function computeSubscriptionState(_subscription: Optional<Subscription, 'state'>): SubscriptionState {
+	return SubscriptionState.Paid;
 }
 
 export function getSubscriptionPlan(
