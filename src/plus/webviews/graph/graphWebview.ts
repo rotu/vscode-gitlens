@@ -37,8 +37,8 @@ import { PlusFeatures } from '../../../features';
 import { GitSearchError } from '../../../git/errors';
 import { getBranchId, getBranchNameWithoutRemote, getRemoteNameFromBranchName } from '../../../git/models/branch';
 import { GitContributor } from '../../../git/models/contributor';
-import { GitGraphRowType } from '../../../git/models/graph';
 import type { GitGraph } from '../../../git/models/graph';
+import { GitGraphRowType } from '../../../git/models/graph';
 import type {
 	GitBranchReference,
 	GitRevisionReference,
@@ -70,8 +70,8 @@ import type { CommitNode } from '../../../views/nodes/commitNode';
 import type { StashNode } from '../../../views/nodes/stashNode';
 import type { TagNode } from '../../../views/nodes/tagNode';
 import { RepositoryFolderNode } from '../../../views/nodes/viewNode';
-import { onIpc } from '../../../webviews/protocol';
 import type { IpcMessage, IpcMessageParams, IpcNotificationType } from '../../../webviews/protocol';
+import { onIpc } from '../../../webviews/protocol';
 import { WebviewBase } from '../../../webviews/webviewBase';
 import type { SubscriptionChangeEvent } from '../../subscription/subscriptionService';
 import { arePlusFeaturesEnabled, ensurePlusFeaturesEnabled } from '../../subscription/utils';
@@ -96,8 +96,10 @@ import type {
 	GraphMissingRefsMetadataType,
 	GraphPullRequestMetadata,
 	GraphRefMetadata,
+	GraphRefMetadataType,
 	GraphRepository,
 	GraphSelectedRows,
+	GraphUpstreamMetadata,
 	GraphWorkingTreeStats,
 	SearchOpenInViewParams,
 	SearchParams,
@@ -130,8 +132,10 @@ import {
 	GetMissingAvatarsCommandType,
 	GetMissingRefsMetadataCommandType,
 	GetMoreRowsCommandType,
+	GraphRefMetadataTypes,
 	SearchCommandType,
 	SearchOpenInViewCommandType,
+	supportedRefMetadataTypes,
 	UpdateColumnsCommandType,
 	UpdateExcludeTypeCommandType,
 	UpdateIncludeOnlyRefsCommandType,
@@ -480,11 +484,18 @@ export class GraphWebview extends WebviewBase<State> {
 		const { activeSelection } = this;
 		if (activeSelection == null) return;
 
-		void GitActions.Commit.showDetailsView(activeSelection, {
-			pin: false,
-			preserveFocus: true,
-			preserveVisibility: this._showDetailsView === false,
-		});
+		this.container.events.fire(
+			'commit:selected',
+			{
+				commit: activeSelection,
+				pin: false,
+				preserveFocus: true,
+				preserveVisibility: this._showDetailsView === false,
+			},
+			{
+				source: this.id,
+			},
+		);
 	}
 
 	protected override onVisibilityChanged(visible: boolean): void {
@@ -538,7 +549,9 @@ export class GraphWebview extends WebviewBase<State> {
 			configuration.changed(e, 'graph.highlightRowsOnRefHover') ||
 			configuration.changed(e, 'graph.scrollRowPadding') ||
 			configuration.changed(e, 'graph.showGhostRefsOnRowHover') ||
-			configuration.changed(e, 'graph.showRemoteNames')
+			configuration.changed(e, 'graph.pullRequests.enabled') ||
+			configuration.changed(e, 'graph.showRemoteNames') ||
+			configuration.changed(e, 'graph.showUpstreamStatus')
 		) {
 			void this.notifyDidChangeConfiguration();
 		}
@@ -645,7 +658,19 @@ export class GraphWebview extends WebviewBase<State> {
 			}
 		} else if (e.type === 'row' && e.row) {
 			const commit = this.getRevisionReference(this.repository?.path, e.row.id, e.row.type);
-			if (commit != null) return GitActions.Commit.showDetailsView(commit, { preserveFocus: e.preserveFocus });
+			if (commit != null) {
+				this.container.events.fire(
+					'commit:selected',
+					{
+						commit: commit,
+						preserveFocus: e.preserveFocus,
+						preserveVisibility: false,
+					},
+					{
+						source: this.id,
+					},
+				);
+			}
 		}
 
 		return Promise.resolve();
@@ -700,58 +725,95 @@ export class GraphWebview extends WebviewBase<State> {
 
 		const repoPath = this._graph.repoPath;
 
-		async function getRefMetadata(this: GraphWebview, id: string, type: GraphMissingRefsMetadataType) {
+		async function getRefMetadata(this: GraphWebview, id: string, missingTypes: GraphMissingRefsMetadataType[]) {
 			if (this._refsMetadata == null) {
 				this._refsMetadata = new Map();
 			}
 
+			const branch = (await this.container.git.getBranches(repoPath, { filter: b => b.id === id }))?.values?.[0];
 			const metadata = { ...this._refsMetadata.get(id) };
-			if (type !== 'pullRequests') {
-				(metadata as any)[type] = null;
-				this._refsMetadata.set(id, metadata);
-				return;
-			}
 
-			const branch = (await this.container.git.getBranches(repoPath, { filter: b => b.id === id && b.remote }))
-				?.values?.[0];
-			const pr = await branch?.getAssociatedPullRequest();
-			if (pr == null) {
-				if (metadata.pullRequests === undefined || metadata.pullRequests?.length === 0) {
-					metadata.pullRequests = null;
+			if (branch == null) {
+				for (const type of missingTypes) {
+					(metadata as any)[type] = null;
+					this._refsMetadata.set(id, metadata);
 				}
-				this._refsMetadata.set(id, metadata);
+
 				return;
 			}
 
-			const prMetadata: GraphPullRequestMetadata = {
-				// TODO@eamodio: This is iffy, but works right now since `github` and `gitlab` are the only values possible currently
-				hostingServiceType: pr.provider.id as GraphHostingServiceType,
-				id: Number.parseInt(pr.id) || 0,
-				title: pr.title,
-				author: pr.author.name,
-				date: (pr.mergedDate ?? pr.closedDate ?? pr.date)?.getTime(),
-				state: pr.state,
-				url: pr.url,
-				context: serializeWebviewItemContext<GraphItemContext>({
-					webviewItem: 'gitlens:pullrequest',
-					webviewItemValue: {
-						type: 'pullrequest',
-						id: pr.id,
-						url: pr.url,
-					},
-				}),
-			};
+			for (const type of missingTypes) {
+				if (!supportedRefMetadataTypes.includes(type)) {
+					(metadata as any)[type] = null;
+					this._refsMetadata.set(id, metadata);
 
-			metadata.pullRequests = [prMetadata];
-			this._refsMetadata.set(id, metadata);
+					continue;
+				}
+
+				if (type === GraphRefMetadataTypes.PullRequest) {
+					const pr = await branch?.getAssociatedPullRequest();
+
+					if (pr == null) {
+						if (metadata.pullRequests === undefined || metadata.pullRequests?.length === 0) {
+							metadata.pullRequests = null;
+						}
+
+						this._refsMetadata.set(id, metadata);
+						continue;
+					}
+
+					const prMetadata: GraphPullRequestMetadata = {
+						// TODO@eamodio: This is iffy, but works right now since `github` and `gitlab` are the only values possible currently
+						hostingServiceType: pr.provider.id as GraphHostingServiceType,
+						id: Number.parseInt(pr.id) || 0,
+						title: pr.title,
+						author: pr.author.name,
+						date: (pr.mergedDate ?? pr.closedDate ?? pr.date)?.getTime(),
+						state: pr.state,
+						url: pr.url,
+						context: serializeWebviewItemContext<GraphItemContext>({
+							webviewItem: 'gitlens:pullrequest',
+							webviewItemValue: {
+								type: 'pullrequest',
+								id: pr.id,
+								url: pr.url,
+							},
+						}),
+					};
+
+					metadata.pullRequests = [prMetadata];
+
+					this._refsMetadata.set(id, metadata);
+					continue;
+				}
+
+				if (type === GraphRefMetadataTypes.Upstream) {
+					const upstream = branch?.upstream;
+
+					if (upstream == null || upstream == undefined || upstream.missing) {
+						metadata.upstream = null;
+						this._refsMetadata.set(id, metadata);
+						continue;
+					}
+
+					const upstreamMetadata: GraphUpstreamMetadata = {
+						name: getBranchNameWithoutRemote(upstream.name),
+						owner: getRemoteNameFromBranchName(upstream.name),
+						ahead: branch.state.ahead,
+						behind: branch.state.behind,
+					};
+
+					metadata.upstream = upstreamMetadata;
+
+					this._refsMetadata.set(id, metadata);
+				}
+			}
 		}
 
 		const promises: Promise<void>[] = [];
 
-		for (const [id, missingTypes] of Object.entries(e.metadata)) {
-			for (const missingType of missingTypes) {
-				promises.push(getRefMetadata.call(this, id, missingType));
-			}
+		for (const id of Object.keys(e.metadata)) {
+			promises.push(getRefMetadata.call(this, id, e.metadata[id]));
 		}
 
 		if (promises.length) {
@@ -942,13 +1004,20 @@ export class GraphWebview extends WebviewBase<State> {
 
 		if (commits == null) return;
 
-		void GitActions.Commit.showDetailsView(commits[0], {
-			pin: false,
-			preserveFocus: true,
-			preserveVisibility: this._firstSelection
-				? this._showDetailsView === false
-				: this._showDetailsView !== 'selection',
-		});
+		this.container.events.fire(
+			'commit:selected',
+			{
+				commit: commits[0],
+				pin: false,
+				preserveFocus: true,
+				preserveVisibility: this._firstSelection
+					? this._showDetailsView === false
+					: this._showDetailsView !== 'selection',
+			},
+			{
+				source: this.id,
+			},
+		);
 		this._firstSelection = false;
 	}
 
@@ -1490,6 +1559,7 @@ export class GraphWebview extends WebviewBase<State> {
 			dateFormat:
 				configuration.get('graph.dateFormat') ?? configuration.get('defaultDateFormat') ?? 'short+short',
 			dateStyle: configuration.get('graph.dateStyle') ?? configuration.get('defaultDateStyle'),
+			enabledRefMetadataTypes: this.getEnabledRefMetadataTypes(),
 			dimMergeCommits: configuration.get('graph.dimMergeCommits'),
 			enableMultiSelection: false,
 			highlightRowsOnRefHover: configuration.get('graph.highlightRowsOnRefHover'),
@@ -1499,6 +1569,19 @@ export class GraphWebview extends WebviewBase<State> {
 			idLength: configuration.get('advanced.abbreviatedShaLength'),
 		};
 		return config;
+	}
+
+	private getEnabledRefMetadataTypes(): GraphRefMetadataType[] {
+		const types: GraphRefMetadataType[] = [];
+		if (configuration.get('graph.pullRequests.enabled')) {
+			types.push(GraphRefMetadataTypes.PullRequest as GraphRefMetadataType);
+		}
+
+		if (configuration.get('graph.showUpstreamStatus')) {
+			types.push(GraphRefMetadataTypes.Upstream as GraphRefMetadataType);
+		}
+
+		return types;
 	}
 
 	private async getGraphAccess() {
@@ -1607,7 +1690,7 @@ export class GraphWebview extends WebviewBase<State> {
 			subscription: access?.subscription.current,
 			allowed: (access?.allowed ?? false) !== false,
 			avatars: data != null ? Object.fromEntries(data.avatars) : undefined,
-			refsMetadata: this.resetRefsMetadata(),
+			refsMetadata: this.resetRefsMetadata() === null ? null : {},
 			loading: deferRows,
 			rows: data?.rows,
 			paging:

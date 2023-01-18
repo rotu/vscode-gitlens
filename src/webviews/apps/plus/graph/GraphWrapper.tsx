@@ -1,4 +1,3 @@
-import GraphContainer, { GRAPH_ZONE_TYPE, REF_ZONE_TYPE } from '@gitkraken/gitkraken-components';
 import type {
 	GraphColumnSetting,
 	GraphColumnsSettings,
@@ -11,6 +10,7 @@ import type {
 	GraphZoneType,
 	OnFormatCommitDateTime,
 } from '@gitkraken/gitkraken-components';
+import GraphContainer, { GRAPH_ZONE_TYPE, REF_ZONE_TYPE } from '@gitkraken/gitkraken-components';
 import { VSCodeCheckbox, VSCodeRadio, VSCodeRadioGroup } from '@vscode/webview-ui-toolkit/react';
 import type { FormEvent, ReactElement } from 'react';
 import React, { createElement, useEffect, useMemo, useRef, useState } from 'react';
@@ -53,7 +53,7 @@ import {
 import type { Subscription } from '../../../../subscription';
 import { getSubscriptionTimeRemaining, SubscriptionState } from '../../../../subscription';
 import { pluralize } from '../../../../system/string';
-import type { IpcNotificationType } from '../../../../webviews/protocol';
+import type { IpcNotificationType } from '../../../protocol';
 import { MenuDivider, MenuItem, MenuLabel, MenuList } from '../../shared/components/menu/react';
 import { PopMenu } from '../../shared/components/overlays/pop-menu/react';
 import { PopOver } from '../../shared/components/overlays/react';
@@ -110,9 +110,15 @@ const createIconElements = (): { [key: string]: ReactElement<any> } => {
 		'show',
 		'hide',
 	];
+
+	const miniIconList = ['upstream-ahead', 'upstream-behind'];
+
 	const elementLibrary: { [key: string]: ReactElement<any> } = {};
 	iconList.forEach(iconKey => {
 		elementLibrary[iconKey] = createElement('span', { className: `graph-icon icon--${iconKey}` });
+	});
+	miniIconList.forEach(iconKey => {
+		elementLibrary[iconKey] = createElement('span', { className: `graph-icon mini-icon icon--${iconKey}` });
 	});
 	return elementLibrary;
 };
@@ -1005,6 +1011,7 @@ export function GraphWrapper({
 							contexts={context}
 							cssVariables={styleProps?.cssVariables}
 							dimMergeCommits={graphConfig?.dimMergeCommits}
+							enabledRefMetadataTypes={graphConfig?.enabledRefMetadataTypes}
 							enableMultiSelection={graphConfig?.enableMultiSelection}
 							excludeRefsById={excludeRefsById}
 							excludeByType={excludeTypes}
