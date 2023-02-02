@@ -1,4 +1,5 @@
 import type {
+	CommitDateTimeSource,
 	CssVariables,
 	ExcludeByType,
 	ExcludeRefsById,
@@ -49,6 +50,12 @@ export enum GraphRefMetadataTypes {
 
 export const supportedRefMetadataTypes: GraphRefMetadataType[] = Object.values(GraphRefMetadataTypes);
 
+export type GraphCommitDateTimeSource = CommitDateTimeSource;
+export enum GraphCommitDateTimeSources {
+	RowEntry = 'rowEntry',
+	Tooltip = 'tooltip',
+}
+
 export interface State {
 	windowFocused?: boolean;
 	repositories?: GraphRepository[];
@@ -77,7 +84,12 @@ export interface State {
 	debugging: boolean;
 
 	// Props below are computed in the webview (not passed)
+	activeDay?: number;
 	activeRow?: string;
+	visibleDays?: {
+		top: number;
+		bottom: number;
+	};
 	theming?: { cssVariables: CssVariables; themeOpacityFactor: number };
 }
 
@@ -123,6 +135,7 @@ export interface GraphComponentConfig {
 	enabledRefMetadataTypes?: GraphRefMetadataType[];
 	enableMultiSelection?: boolean;
 	highlightRowsOnRefHover?: boolean;
+	minimap?: boolean;
 	scrollRowPadding?: number;
 	showGhostRefsOnRowHover?: boolean;
 	showRemoteNamesOnRefs?: boolean;
@@ -231,6 +244,13 @@ export interface UpdateExcludeTypeParams {
 }
 export const UpdateExcludeTypeCommandType = new IpcCommandType<UpdateExcludeTypeParams>(
 	'graph/fitlers/update/excludeType',
+);
+
+export interface UpdateGraphConfigurationParams {
+	changes: { [key in keyof GraphComponentConfig]?: GraphComponentConfig[key] };
+}
+export const UpdateGraphConfigurationCommandType = new IpcCommandType<UpdateGraphConfigurationParams>(
+	'graph/configuration/update',
 );
 
 export interface UpdateIncludeOnlyRefsParams {

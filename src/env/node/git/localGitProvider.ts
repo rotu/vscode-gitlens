@@ -29,6 +29,7 @@ import {
 	WorktreeDeleteErrorReason,
 } from '../../../git/errors';
 import type {
+	GitDir,
 	GitProvider,
 	GitProviderDescriptor,
 	NextComparisonUrisResult,
@@ -184,7 +185,7 @@ const stashSummaryRegex =
 const reflogCommands = ['merge', 'pull'];
 
 interface RepositoryInfo {
-	gitDir?: string;
+	gitDir?: GitDir;
 	user?: GitUser | null;
 }
 
@@ -331,9 +332,7 @@ export class LocalGitProvider implements GitProvider, Disposable {
 
 		const location = await any<GitLocation>(findGitPromise, findGitFromSCMPromise);
 		// Save the found git path, but let things settle first to not impact startup performance
-		setTimeout(() => {
-			void this.container.storage.storeWorkspace('gitPath', location.path);
-		}, 1000);
+		setTimeout(() => void this.container.storage.storeWorkspace('gitPath', location.path), 1000);
 
 		if (scope != null) {
 			scope.exitDetails = ` ${GlyphChars.Dot} Git (${location.version}) found in ${
@@ -1723,6 +1722,7 @@ export class LocalGitProvider implements GitProvider, Disposable {
 									repoPath: repoPath,
 									avatars: avatars,
 									ids: ids,
+									includes: options?.include,
 									branches: branchMap,
 									remotes: remoteMap,
 									rows: [],
@@ -1743,6 +1743,7 @@ export class LocalGitProvider implements GitProvider, Disposable {
 						repoPath: repoPath,
 						avatars: avatars,
 						ids: ids,
+						includes: options?.include,
 						branches: branchMap,
 						remotes: remoteMap,
 						rows: [],
@@ -2061,6 +2062,7 @@ export class LocalGitProvider implements GitProvider, Disposable {
 				repoPath: repoPath,
 				avatars: avatars,
 				ids: ids,
+				includes: options?.include,
 				skippedIds: skippedIds,
 				branches: branchMap,
 				remotes: remoteMap,
@@ -2496,25 +2498,38 @@ export class LocalGitProvider implements GitProvider, Disposable {
 	}
 
 	@debug()
+	async getGitDir(repoPath: string): Promise<GitDir> {
+		const repo = this._repoInfoCache.get(repoPath);
+		if (repo?.gitDir != null) return repo.gitDir;
+
+		const gitDirPaths = await this.git.rev_parse__git_dir(repoPath);
+
+		let gitDir: GitDir;
+		if (gitDirPaths != null) {
+			gitDir = {
+				uri: Uri.file(gitDirPaths.path),
+				commonUri: gitDirPaths.commonPath != null ? Uri.file(gitDirPaths.commonPath) : undefined,
+			};
+		} else {
+			gitDir = {
+				uri: this.getAbsoluteUri('.git', repoPath),
+			};
+		}
+		this._repoInfoCache.set(repoPath, { ...repo, gitDir: gitDir });
+
+		return gitDir;
+	}
+
+	@debug()
 	async getLastFetchedTimestamp(repoPath: string): Promise<number | undefined> {
 		try {
 			const gitDir = await this.getGitDir(repoPath);
-			const stats = await workspace.fs.stat(this.container.git.getAbsoluteUri(`${gitDir}/FETCH_HEAD`, repoPath));
+			const stats = await workspace.fs.stat(Uri.joinPath(gitDir.uri, 'FETCH_HEAD'));
 			// If the file is empty, assume the fetch failed, and don't update the timestamp
 			if (stats.size > 0) return stats.mtime;
 		} catch {}
 
 		return undefined;
-	}
-
-	private async getGitDir(repoPath: string): Promise<string> {
-		const repo = this._repoInfoCache.get(repoPath);
-		if (repo?.gitDir != null) return repo.gitDir;
-
-		const gitDir = normalizePath((await this.git.rev_parse__git_dir(repoPath)) || '.git');
-		this._repoInfoCache.set(repoPath, { ...repo, gitDir: gitDir });
-
-		return gitDir;
 	}
 
 	@log()

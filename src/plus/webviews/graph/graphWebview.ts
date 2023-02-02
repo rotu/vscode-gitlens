@@ -30,7 +30,7 @@ import { parseCommandContext } from '../../../commands/base';
 import { GitActions } from '../../../commands/gitCommands.actions';
 import type { Config } from '../../../configuration';
 import { configuration } from '../../../configuration';
-import { Commands, ContextKeys, CoreGitCommands, GlyphChars } from '../../../constants';
+import { Commands, ContextKeys, CoreCommands, CoreGitCommands, GlyphChars } from '../../../constants';
 import type { Container } from '../../../container';
 import { getContext, onDidChangeContext } from '../../../context';
 import { PlusFeatures } from '../../../features';
@@ -53,7 +53,13 @@ import type { GitSearch } from '../../../git/search';
 import { getSearchQueryComparisonKey } from '../../../git/search';
 import { RepositoryPicker } from '../../../quickpicks/repositoryPicker';
 import type { StoredGraphFilters, StoredGraphIncludeOnlyRef } from '../../../storage';
-import { executeActionCommand, executeCommand, executeCoreGitCommand, registerCommand } from '../../../system/command';
+import {
+	executeActionCommand,
+	executeCommand,
+	executeCoreCommand,
+	executeCoreGitCommand,
+	registerCommand,
+} from '../../../system/command';
 import { gate } from '../../../system/decorators/gate';
 import { debug } from '../../../system/decorators/log';
 import type { Deferrable } from '../../../system/function';
@@ -106,6 +112,7 @@ import type {
 	State,
 	UpdateColumnsParams,
 	UpdateExcludeTypeParams,
+	UpdateGraphConfigurationParams,
 	UpdateRefsVisibilityParams,
 	UpdateSelectionParams,
 } from './protocol';
@@ -138,6 +145,7 @@ import {
 	supportedRefMetadataTypes,
 	UpdateColumnsCommandType,
 	UpdateExcludeTypeCommandType,
+	UpdateGraphConfigurationCommandType,
 	UpdateIncludeOnlyRefsCommandType,
 	UpdateRefsVisibilityCommandType,
 	UpdateSelectionCommandType,
@@ -347,6 +355,7 @@ export class GraphWebview extends WebviewBase<State> {
 			registerCommand('gitlens.graph.copyRemoteCommitUrl', item => this.openCommitOnRemote(item, true), this),
 			registerCommand('gitlens.graph.showInDetailsView', this.openInDetailsView, this),
 			registerCommand('gitlens.graph.openCommitOnRemote', this.openCommitOnRemote, this),
+			registerCommand('gitlens.graph.openSCM', this.openSCM, this),
 			registerCommand('gitlens.graph.rebaseOntoCommit', this.rebase, this),
 			registerCommand('gitlens.graph.resetCommit', this.resetCommit, this),
 			registerCommand('gitlens.graph.resetToCommit', this.resetToCommit, this),
@@ -354,6 +363,7 @@ export class GraphWebview extends WebviewBase<State> {
 			registerCommand('gitlens.graph.switchToCommit', this.switchTo, this),
 			registerCommand('gitlens.graph.undoCommit', this.undoCommit, this),
 
+			registerCommand('gitlens.graph.saveStash', this.saveStash, this),
 			registerCommand('gitlens.graph.applyStash', this.applyStash, this),
 			registerCommand('gitlens.graph.deleteStash', this.deleteStash, this),
 
@@ -443,6 +453,9 @@ export class GraphWebview extends WebviewBase<State> {
 			case UpdateColumnsCommandType.method:
 				onIpc(UpdateColumnsCommandType, e, params => this.onColumnsChanged(params));
 				break;
+			case UpdateGraphConfigurationCommandType.method:
+				onIpc(UpdateGraphConfigurationCommandType, e, params => this.updateGraphConfig(params));
+				break;
 			case UpdateRefsVisibilityCommandType.method:
 				onIpc(UpdateRefsVisibilityCommandType, e, params => this.onRefsVisibilityChanged(params));
 				break;
@@ -457,6 +470,24 @@ export class GraphWebview extends WebviewBase<State> {
 					this.updateIncludeOnlyRefs(this._graph, params.refs),
 				);
 				break;
+		}
+	}
+	updateGraphConfig(params: UpdateGraphConfigurationParams) {
+		const config = this.getComponentConfig();
+
+		let key: keyof UpdateGraphConfigurationParams['changes'];
+		for (key in params.changes) {
+			if (config[key] !== params.changes[key]) {
+				switch (key) {
+					case 'minimap':
+						void configuration.updateEffective('graph.experimental.minimap.enabled', params.changes[key]);
+						break;
+					default:
+						// TODO:@eamodio add more config options as needed
+						debugger;
+						break;
+				}
+			}
 		}
 	}
 
@@ -551,9 +582,18 @@ export class GraphWebview extends WebviewBase<State> {
 			configuration.changed(e, 'graph.showGhostRefsOnRowHover') ||
 			configuration.changed(e, 'graph.pullRequests.enabled') ||
 			configuration.changed(e, 'graph.showRemoteNames') ||
-			configuration.changed(e, 'graph.showUpstreamStatus')
+			configuration.changed(e, 'graph.showUpstreamStatus') ||
+			configuration.changed(e, 'graph.experimental.minimap.enabled')
 		) {
 			void this.notifyDidChangeConfiguration();
+
+			if (
+				configuration.changed(e, 'graph.experimental.minimap.enabled') &&
+				configuration.get('graph.experimental.minimap.enabled') &&
+				!this._graph?.includes?.stats
+			) {
+				this.updateState();
+			}
 		}
 	}
 
@@ -1563,6 +1603,7 @@ export class GraphWebview extends WebviewBase<State> {
 			dimMergeCommits: configuration.get('graph.dimMergeCommits'),
 			enableMultiSelection: false,
 			highlightRowsOnRefHover: configuration.get('graph.highlightRowsOnRefHover'),
+			minimap: configuration.get('graph.experimental.minimap.enabled'),
 			scrollRowPadding: configuration.get('graph.scrollRowPadding'),
 			showGhostRefsOnRowHover: configuration.get('graph.showGhostRefsOnRowHover'),
 			showRemoteNamesOnRefs: configuration.get('graph.showRemoteNames'),
@@ -1611,6 +1652,17 @@ export class GraphWebview extends WebviewBase<State> {
 			added: workingTreeStatus?.added ?? 0,
 			deleted: workingTreeStatus?.deleted ?? 0,
 			modified: workingTreeStatus?.changed ?? 0,
+			context: serializeWebviewItemContext<GraphItemContext>({
+				webviewItem: 'gitlens:wip',
+				webviewItemValue: {
+					type: 'commit',
+					ref: this.getRevisionReference(
+						this.repository.path,
+						GitRevision.uncommitted,
+						GitGraphRowType.Working,
+					)!,
+				},
+			}),
 		};
 	}
 
@@ -1647,7 +1699,11 @@ export class GraphWebview extends WebviewBase<State> {
 		const dataPromise = this.container.git.getCommitsForGraph(
 			this.repository.path,
 			this._panel!.webview.asWebviewUri.bind(this._panel!.webview),
-			{ limit: limit, ref: ref },
+			{
+				include: { stats: configuration.get('graph.experimental.minimap.enabled') },
+				limit: limit,
+				ref: ref,
+			},
 		);
 
 		// Check for GitLens+ access and working tree stats
@@ -2015,6 +2071,14 @@ export class GraphWebview extends WebviewBase<State> {
 	}
 
 	@debug()
+	private openSCM(item?: GraphItemContext) {
+		const ref = this.getGraphItemRef(item, 'revision');
+		if (ref == null) return Promise.resolve();
+
+		return executeCoreCommand(CoreCommands.ShowSCM);
+	}
+
+	@debug()
 	private openCommitOnRemote(item?: GraphItemContext, clipboard?: boolean) {
 		const ref = this.getGraphItemRef(item, 'revision');
 		if (ref == null) return Promise.resolve();
@@ -2123,6 +2187,14 @@ export class GraphWebview extends WebviewBase<State> {
 		}
 
 		return void executeCoreGitCommand(CoreGitCommands.UndoCommit, ref.repoPath);
+	}
+
+	@debug()
+	private saveStash(item?: GraphItemContext) {
+		const ref = this.getGraphItemRef(item);
+		if (ref == null) return Promise.resolve();
+
+		return GitActions.Stash.push(ref.repoPath);
 	}
 
 	@debug()

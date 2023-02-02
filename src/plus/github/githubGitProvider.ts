@@ -40,8 +40,8 @@ import { GitUri } from '../../git/gitUri';
 import type { GitBlame, GitBlameAuthor, GitBlameLine, GitBlameLines } from '../../git/models/blame';
 import type { BranchSortOptions } from '../../git/models/branch';
 import { getBranchId, GitBranch, sortBranches } from '../../git/models/branch';
-import type { GitCommitLine } from '../../git/models/commit';
-import { GitCommit, GitCommitIdentity } from '../../git/models/commit';
+import type { GitCommitLine, GitCommitStats } from '../../git/models/commit';
+import { getChangedFilesCount, GitCommit, GitCommitIdentity } from '../../git/models/commit';
 import { GitContributor } from '../../git/models/contributor';
 import type { GitDiff, GitDiffFilter, GitDiffHunkLine, GitDiffShortStat } from '../../git/models/diff';
 import type { GitFile } from '../../git/models/file';
@@ -867,10 +867,7 @@ export class GitHubGitProvider implements GitProvider, Disposable {
 
 		const { stats } = commit;
 
-		const changedFiles =
-			typeof stats.changedFiles === 'number'
-				? stats.changedFiles
-				: stats.changedFiles.added + stats.changedFiles.changed + stats.changedFiles.deleted;
+		const changedFiles = getChangedFilesCount(stats.changedFiles);
 		return { additions: stats.additions, deletions: stats.deletions, changedFiles: changedFiles };
 	}
 
@@ -1119,12 +1116,13 @@ export class GitHubGitProvider implements GitProvider, Disposable {
 		ids: Set<string>,
 		options?: {
 			branch?: string;
+			include?: { stats?: boolean };
 			limit?: number;
-			mode?: 'single' | 'local' | 'all';
 			ref?: string;
 			useAvatars?: boolean;
 		},
 	): Promise<GitGraph> {
+		const includes = { ...options?.include, stats: true }; // stats are always available, so force it
 		const branchMap = branch != null ? new Map([[branch.name, branch]]) : new Map<string, GitBranch>();
 		const remoteMap = remote != null ? new Map([[remote.name, remote]]) : new Map<string, GitRemote>();
 		if (log == null) {
@@ -1132,6 +1130,7 @@ export class GitHubGitProvider implements GitProvider, Disposable {
 				repoPath: repoPath,
 				avatars: avatars,
 				ids: ids,
+				includes: includes,
 				branches: branchMap,
 				remotes: remoteMap,
 				rows: [],
@@ -1144,6 +1143,7 @@ export class GitHubGitProvider implements GitProvider, Disposable {
 				repoPath: repoPath,
 				avatars: avatars,
 				ids: ids,
+				includes: includes,
 				branches: branchMap,
 				remotes: remoteMap,
 				rows: [],
@@ -1158,6 +1158,7 @@ export class GitHubGitProvider implements GitProvider, Disposable {
 		let refRemoteHeads: GitGraphRowRemoteHead[];
 		let refTags: GitGraphRowTag[];
 		let contexts: GitGraphRowContexts | undefined;
+		let stats: GitCommitStats | undefined;
 
 		const hasHeadShaAndRemote = branch?.sha != null && remote != null;
 
@@ -1275,6 +1276,7 @@ export class GitHubGitProvider implements GitProvider, Disposable {
 				}),
 			};
 
+			stats = commit.stats;
 			rows.push({
 				sha: commit.sha,
 				parents: commit.parents,
@@ -1288,6 +1290,14 @@ export class GitHubGitProvider implements GitProvider, Disposable {
 				remotes: refRemoteHeads,
 				tags: refTags,
 				contexts: contexts,
+				stats:
+					stats != null
+						? {
+								files: getChangedFilesCount(stats.changedFiles),
+								additions: stats.additions,
+								deletions: stats.deletions,
+						  }
+						: undefined,
 			});
 		}
 
@@ -1301,6 +1311,7 @@ export class GitHubGitProvider implements GitProvider, Disposable {
 			repoPath: repoPath,
 			avatars: avatars,
 			ids: ids,
+			includes: includes,
 			branches: branchMap,
 			remotes: remoteMap,
 			rows: rows,

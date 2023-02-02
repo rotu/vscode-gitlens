@@ -8,6 +8,7 @@ import type {
 	GraphRefOptData,
 	GraphRow,
 	GraphZoneType,
+	Head,
 	OnFormatCommitDateTime,
 } from '@gitkraken/gitkraken-components';
 import GraphContainer, { GRAPH_ZONE_TYPE, REF_ZONE_TYPE } from '@gitkraken/gitkraken-components';
@@ -25,6 +26,7 @@ import type {
 	GraphAvatars,
 	GraphColumnName,
 	GraphColumnsConfig,
+	GraphCommitDateTimeSource,
 	GraphComponentConfig,
 	GraphExcludedRef,
 	GraphExcludeTypes,
@@ -34,6 +36,7 @@ import type {
 	GraphSearchResultsError,
 	InternalNotificationType,
 	State,
+	UpdateGraphConfigurationParams,
 	UpdateStateCallback,
 } from '../../../../plus/webviews/graph/protocol';
 import {
@@ -49,6 +52,7 @@ import {
 	DidChangeWorkingTreeNotificationType,
 	DidFetchNotificationType,
 	DidSearchNotificationType,
+	GraphCommitDateTimeSources,
 } from '../../../../plus/webviews/graph/protocol';
 import type { Subscription } from '../../../../subscription';
 import { getSubscriptionTimeRemaining, SubscriptionState } from '../../../../subscription';
@@ -61,6 +65,14 @@ import { SearchBox } from '../../shared/components/search/react';
 import type { SearchNavigationEventDetail } from '../../shared/components/search/search-box';
 import type { DateTimeFormat } from '../../shared/date';
 import { formatDate, fromNow } from '../../shared/date';
+import type {
+	GraphMinimapDaySelectedEventDetail,
+	GraphMinimapMarker,
+	GraphMinimapSearchResultMarker,
+	GraphMinimapStats,
+	GraphMinimap as GraphMinimapType,
+} from './minimap/minimap';
+import { GraphMinimap } from './minimap/react';
 
 export interface GraphWrapperProps {
 	nonce?: string;
@@ -86,10 +98,12 @@ export interface GraphWrapperProps {
 	onEnsureRowPromise?: (id: string, select: boolean) => Promise<DidEnsureRowParams | undefined>;
 	onExcludeType?: (key: keyof GraphExcludeTypes, value: boolean) => void;
 	onIncludeOnlyRef?: (all: boolean) => void;
+	onUpdateGraphConfiguration?: (changes: UpdateGraphConfigurationParams['changes']) => void;
 }
 
 const getGraphDateFormatter = (config?: GraphComponentConfig): OnFormatCommitDateTime => {
-	return (commitDateTime: number) => formatCommitDateTime(commitDateTime, config?.dateStyle, config?.dateFormat);
+	return (commitDateTime: number, source?: GraphCommitDateTimeSource) =>
+		formatCommitDateTime(commitDateTime, config?.dateStyle, config?.dateFormat, source);
 };
 
 const createIconElements = (): { [key: string]: ReactElement<any> } => {
@@ -165,6 +179,7 @@ export function GraphWrapper({
 	onDismissBanner,
 	onExcludeType,
 	onIncludeOnlyRef,
+	onUpdateGraphConfiguration,
 }: GraphWrapperProps) {
 	const graphRef = useRef<GraphContainer>(null);
 
@@ -177,6 +192,8 @@ export function GraphWrapper({
 	);
 	const [selectedRows, setSelectedRows] = useState(state.selectedRows);
 	const [activeRow, setActiveRow] = useState(state.activeRow);
+	const [activeDay, setActiveDay] = useState(state.activeDay);
+	const [visibleDays, setVisibleDays] = useState(state.visibleDays);
 	const [graphConfig, setGraphConfig] = useState(state.config);
 	// const [graphDateFormatter, setGraphDateFormatter] = useState(getGraphDateFormatter(config));
 	const [columns, setColumns] = useState(state.columns);
@@ -210,6 +227,8 @@ export function GraphWrapper({
 	const [workingTreeStats, setWorkingTreeStats] = useState(
 		state.workingTreeStats ?? { added: 0, modified: 0, deleted: 0 },
 	);
+
+	const minimap = useRef<GraphMinimapType | undefined>(undefined);
 
 	const ensuredIds = useRef<Set<string>>(new Set());
 	const ensuredSkippedIds = useRef<Set<string>>(new Set());
@@ -324,6 +343,206 @@ export function GraphWrapper({
 			window.removeEventListener('keydown', handleKeyDown);
 		};
 	}, [activeRow]);
+
+	const minimapData = useMemo(() => {
+		if (!graphConfig?.minimap) return undefined;
+
+		// Loops through all the rows and group them by day and aggregate the row.stats
+		const statsByDayMap = new Map<number, GraphMinimapStats>();
+		const markersByDay = new Map<number, GraphMinimapMarker[]>();
+
+		let rankedShas: {
+			head: string | undefined;
+			branch: string | undefined;
+			remote: string | undefined;
+			tag: string | undefined;
+		} = {
+			head: undefined,
+			branch: undefined,
+			remote: undefined,
+			tag: undefined,
+		};
+
+		let day;
+		let prevDay;
+
+		let head: Head | undefined;
+		let markers;
+		let headMarkers;
+		let remoteMarkers;
+		let tagMarkers;
+		let row: GraphRow;
+		let stat;
+		let stats;
+
+		// Iterate in reverse order so that we can track the HEAD upstream properly
+		for (let i = rows.length - 1; i >= 0; i--) {
+			row = rows[i];
+			stats = row.stats;
+
+			day = getDay(row.date);
+			if (day !== prevDay) {
+				prevDay = day;
+				rankedShas = {
+					head: undefined,
+					branch: undefined,
+					remote: undefined,
+					tag: undefined,
+				};
+			}
+
+			if (row.heads?.length) {
+				rankedShas.branch = row.sha;
+
+				// eslint-disable-next-line no-loop-func
+				headMarkers = row.heads.map<GraphMinimapMarker>(h => {
+					if (h.isCurrentHead) {
+						head = h;
+						rankedShas.head = row.sha;
+					}
+
+					return {
+						type: 'branch',
+						name: h.name,
+						current: h.isCurrentHead,
+					};
+				});
+
+				markers = markersByDay.get(day);
+				if (markers == null) {
+					markersByDay.set(day, headMarkers);
+				} else {
+					markers.push(...headMarkers);
+				}
+			}
+
+			if (row.remotes?.length) {
+				rankedShas.remote = row.sha;
+
+				// eslint-disable-next-line no-loop-func
+				remoteMarkers = row.remotes.map<GraphMinimapMarker>(r => {
+					let current = false;
+					if (r.name === head?.name) {
+						rankedShas.remote = row.sha;
+						current = true;
+					}
+
+					return {
+						type: 'remote',
+						name: `${r.owner}/${r.name}`,
+						current: current,
+					};
+				});
+
+				markers = markersByDay.get(day);
+				if (markers == null) {
+					markersByDay.set(day, remoteMarkers);
+				} else {
+					markers.push(...remoteMarkers);
+				}
+			}
+
+			if (row.tags?.length) {
+				rankedShas.tag = row.sha;
+
+				tagMarkers = row.tags.map<GraphMinimapMarker>(t => ({
+					type: 'tag',
+					name: t.name,
+				}));
+
+				markers = markersByDay.get(day);
+				if (markers == null) {
+					markersByDay.set(day, tagMarkers);
+				} else {
+					markers.push(...tagMarkers);
+				}
+			}
+
+			stat = statsByDayMap.get(day);
+			if (stat == null) {
+				stat =
+					stats != null
+						? {
+								activity: { additions: stats.additions, deletions: stats.deletions },
+								commits: 1,
+								files: stats.files,
+								sha: row.sha,
+						  }
+						: {
+								commits: 1,
+								sha: row.sha,
+						  };
+				statsByDayMap.set(day, stat);
+			} else {
+				stat.commits++;
+				stat.sha = rankedShas.head ?? rankedShas.branch ?? rankedShas.remote ?? rankedShas.tag ?? stat.sha;
+				if (stats != null) {
+					if (stat.activity == null) {
+						stat.activity = { additions: stats.additions, deletions: stats.deletions };
+					} else {
+						stat.activity.additions += stats.additions;
+						stat.activity.deletions += stats.deletions;
+					}
+					stat.files = (stat.files ?? 0) + stats.files;
+				}
+			}
+		}
+
+		return { stats: statsByDayMap, markers: markersByDay };
+	}, [rows, graphConfig?.minimap]);
+
+	const minimapSearchResults = useMemo(() => {
+		if (!graphConfig?.minimap) return undefined;
+
+		const searchResultsByDay = new Map<number, GraphMinimapSearchResultMarker>();
+
+		if (searchResults?.ids != null) {
+			let day;
+			let sha;
+			let r;
+			let result;
+			for ([sha, r] of Object.entries(searchResults.ids)) {
+				day = getDay(r.date);
+
+				result = searchResultsByDay.get(day);
+				if (result == null) {
+					searchResultsByDay.set(day, { type: 'search-result', sha: sha });
+				}
+			}
+		}
+
+		return searchResultsByDay;
+	}, [searchResults, graphConfig?.minimap]);
+
+	const handleOnMinimapDaySelected = (e: CustomEvent<GraphMinimapDaySelectedEventDetail>) => {
+		let { sha } = e.detail;
+		if (sha == null) {
+			const date = e.detail.date?.getTime();
+			if (date == null) return;
+
+			// Find closest row to the date
+			const closest = rows.reduce((prev, curr) =>
+				Math.abs(curr.date - date) < Math.abs(prev.date - date) ? curr : prev,
+			);
+			sha = closest.sha;
+		}
+
+		graphRef.current?.selectCommits([sha], false, true);
+	};
+
+	const handleOnToggleMinimap = (_e: React.MouseEvent) => {
+		onUpdateGraphConfiguration?.({ minimap: !graphConfig?.minimap });
+	};
+
+	const handleOnGraphMouseLeave = (_event: any) => {
+		minimap.current?.unselect(undefined, true);
+	};
+
+	const handleOnGraphRowHovered = (_event: any, graphZoneType: GraphZoneType, graphRow: GraphRow) => {
+		if (graphZoneType === REF_ZONE_TYPE || minimap.current == null) return;
+
+		minimap.current?.select(graphRow.date, true);
+	};
 
 	const handleKeyDown = (e: KeyboardEvent) => {
 		if (e.key === 'Enter' || e.key === ' ') {
@@ -593,6 +812,13 @@ export function GraphWrapper({
 		}
 	};
 
+	const handleOnGraphVisibleRowsChanged = (top: GraphRow, bottom: GraphRow) => {
+		setVisibleDays({
+			top: new Date(top.date).setHours(23, 59, 59, 999),
+			bottom: new Date(bottom.date).setHours(0, 0, 0, 0),
+		});
+	};
+
 	const handleOnGraphColumnsReOrdered = (columnsSettings: GraphColumnsSettings) => {
 		const graphColumnsConfig: GraphColumnsConfig = {};
 		for (const [columnName, config] of Object.entries(columnsSettings as GraphColumnsConfig)) {
@@ -631,6 +857,8 @@ export function GraphWrapper({
 		// HACK: Ensure the main state is updated since it doesn't come from the extension
 		state.activeRow = activeKey;
 		setActiveRow(activeKey);
+		setActiveDay(active?.date);
+
 		onSelectionChange?.(rows);
 	};
 
@@ -989,6 +1217,18 @@ export function GraphWrapper({
 								onNavigate={e => handleSearchNavigation(e as CustomEvent<SearchNavigationEventDetail>)}
 								onOpenInView={() => handleSearchOpenInView()}
 							/>
+							<span>
+								<span className="action-divider"></span>
+							</span>
+							<button
+								type="button"
+								className="action-button action-button--narrow"
+								title="Toggle Minimap (experimental)"
+								aria-label="Toggle Minimap (experimental)"
+								onClick={handleOnToggleMinimap}
+							>
+								<span className="codicon codicon-graph-line action-button__icon"></span>
+							</button>
 						</div>
 					</div>
 				)}
@@ -996,6 +1236,17 @@ export function GraphWrapper({
 					<div className="progress-bar"></div>
 				</div>
 			</header>
+			{graphConfig?.minimap && (
+				<GraphMinimap
+					ref={minimap as any}
+					activeDay={activeDay}
+					data={minimapData?.stats}
+					markers={minimapData?.markers}
+					searchResults={minimapSearchResults}
+					visibleDays={visibleDays}
+					onSelected={e => handleOnMinimapDaySelected(e as CustomEvent<GraphMinimapDaySelectedEventDetail>)}
+				></GraphMinimap>
+			)}
 			<main
 				id="main"
 				className={`graph-app__main${!isAccessAllowed ? ' is-gated' : ''}`}
@@ -1034,11 +1285,14 @@ export function GraphWrapper({
 							onDoubleClickGraphRow={handleOnDoubleClickRow}
 							onDoubleClickGraphRef={handleOnDoubleClickRef}
 							onGraphColumnsReOrdered={handleOnGraphColumnsReOrdered}
+							onGraphMouseLeave={minimap.current ? handleOnGraphMouseLeave : undefined}
+							onGraphRowHovered={minimap.current ? handleOnGraphRowHovered : undefined}
 							onSelectGraphRows={handleSelectGraphRows}
 							onToggleRefsVisibilityClick={handleOnToggleRefsVisibilityClick}
 							onEmailsMissingAvatarUrls={handleMissingAvatars}
 							onRefsMissingMetadata={handleMissingRefsMetadata}
 							onShowMoreCommits={handleMoreCommits}
+							onGraphVisibleRowsChanged={minimap.current ? handleOnGraphVisibleRowsChanged : undefined}
 							platform={clientPlatform}
 							refMetadataById={refsMetadata}
 							shaLength={graphConfig?.idLength}
@@ -1068,11 +1322,18 @@ export function GraphWrapper({
 }
 
 function formatCommitDateTime(
-	commitDateTime: number,
+	date: number,
 	style: DateStyle = DateStyle.Absolute,
 	format: DateTimeFormat | string = 'short+short',
+	source?: GraphCommitDateTimeSource,
 ): string {
-	return style === DateStyle.Relative ? fromNow(commitDateTime) : formatDate(commitDateTime, format);
+	switch (source) {
+		case GraphCommitDateTimeSources.Tooltip:
+			return `${formatDate(date, format)} (${fromNow(date)})`;
+		case GraphCommitDateTimeSources.RowEntry:
+		default:
+			return style === DateStyle.Relative ? fromNow(date) : formatDate(date, format);
+	}
 }
 
 function getClosestSearchResultIndex(
@@ -1192,4 +1453,8 @@ function getSearchResultModel(state: State): {
 		}
 	}
 	return { results: results, resultsError: resultsError };
+}
+
+function getDay(date: number | Date): number {
+	return new Date(date).setHours(0, 0, 0, 0);
 }
