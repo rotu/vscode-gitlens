@@ -28,6 +28,10 @@ import type { RemoteProviders } from './remotes/remoteProviders';
 import type { RichRemoteProvider } from './remotes/richRemoteProvider';
 import type { GitSearch, SearchQuery } from './search';
 
+export type GitCaches = 'branches' | 'contributors' | 'providers' | 'remotes' | 'stashes' | 'status' | 'tags';
+export type GitRepositoryCaches = Extract<GitCaches, 'branches' | 'remotes'>;
+export const gitRepositoryCacheKeys: Set<GitRepositoryCaches> = new Set(['branches', 'remotes']);
+
 export interface GitDir {
 	readonly uri: Uri;
 	readonly commonUri?: Uri;
@@ -128,17 +132,15 @@ export interface GitProvider extends Disposable {
 	// getRootUri(pathOrUri: string | Uri): Uri;
 	getWorkingUri(repoPath: string, uri: Uri): Promise<Uri | undefined>;
 
-	addRemote(repoPath: string, name: string, url: string): Promise<void>;
-	pruneRemote(repoPath: string, remoteName: string): Promise<void>;
+	addRemote(repoPath: string, name: string, url: string, options?: { fetch?: boolean }): Promise<void>;
+	pruneRemote(repoPath: string, name: string): Promise<void>;
+	removeRemote(repoPath: string, name: string): Promise<void>;
 	applyChangesToWorkingFile(uri: GitUri, ref1?: string, ref2?: string): Promise<void>;
 	checkout(
 		repoPath: string,
 		ref: string,
 		options?: { createBranch?: string | undefined } | { path?: string | undefined },
 	): Promise<void>;
-	resetCaches(
-		...affects: ('branches' | 'contributors' | 'providers' | 'remotes' | 'stashes' | 'status' | 'tags')[]
-	): void;
 	excludeIgnoredUris(repoPath: string, uris: Uri[]): Promise<Uri[]>;
 	fetch(
 		repoPath: string,
@@ -234,7 +236,8 @@ export interface GitProvider extends Disposable {
 			ref?: string;
 		},
 	): Promise<GitGraph>;
-	getOldestUnpushedRefForFile(repoPath: string, uri: Uri): Promise<string | undefined>;
+	getConfig?(repoPath: string, key: string): Promise<string | undefined>;
+	setConfig?(repoPath: string, key: string, value: string | undefined): Promise<void>;
 	getContributors(
 		repoPath: string,
 		options?: { all?: boolean | undefined; ref?: string | undefined; stats?: boolean | undefined },
@@ -333,6 +336,7 @@ export interface GitProvider extends Disposable {
 		ref: string | undefined,
 		skip?: number,
 	): Promise<NextComparisonUrisResult | undefined>;
+	getOldestUnpushedRefForFile(repoPath: string, uri: Uri): Promise<string | undefined>;
 	getPreviousComparisonUris(
 		repoPath: string,
 		uri: Uri,
@@ -376,7 +380,7 @@ export interface GitProvider extends Disposable {
 	): Promise<PagedResult<GitTag>>;
 	getTreeEntryForRevision(repoPath: string, path: string, ref: string): Promise<GitTreeEntry | undefined>;
 	getTreeForRevision(repoPath: string, ref: string): Promise<GitTreeEntry[]>;
-
+	getUniqueRepositoryId(repoPath: string): Promise<string | undefined>;
 	hasBranchOrTag(
 		repoPath: string | undefined,
 		options?: {

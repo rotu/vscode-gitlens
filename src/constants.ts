@@ -1,4 +1,6 @@
 export const quickPickTitleMaxChars = 80;
+export const slowCallWarningThreshold = 500;
+
 export const ImageMimetypes: Record<string, string> = {
 	'.png': 'image/png',
 	'.gif': 'image/gif',
@@ -13,16 +15,40 @@ export const ImageMimetypes: Record<string, string> = {
 
 export const enum CharCode {
 	/**
+	 * The `#` character.
+	 */
+	Hash = 35,
+	/**
 	 * The `/` character.
 	 */
 	Slash = 47,
+	Digit0 = 48,
+	Digit1 = 49,
+	Digit2 = 50,
+	Digit3 = 51,
+	Digit4 = 52,
+	Digit5 = 53,
+	Digit6 = 54,
+	Digit7 = 55,
+	Digit8 = 56,
+	Digit9 = 57,
 	/**
 	 * The `\` character.
 	 */
 	Backslash = 92,
 	A = 65,
+	B = 66,
+	C = 67,
+	D = 68,
+	E = 69,
+	F = 70,
 	Z = 90,
 	a = 97,
+	b = 98,
+	c = 99,
+	d = 100,
+	e = 101,
+	f = 102,
 	z = 122,
 }
 
@@ -62,6 +88,10 @@ export const enum Commands {
 	ConnectRemoteProvider = 'gitlens.connectRemoteProvider',
 	CopyAutolinkUrl = 'gitlens.copyAutolinkUrl',
 	CopyCurrentBranch = 'gitlens.copyCurrentBranch',
+	CopyDeepLinkToBranch = 'gitlens.copyDeepLinkToBranch',
+	CopyDeepLinkToCommit = 'gitlens.copyDeepLinkToCommit',
+	CopyDeepLinkToRepo = 'gitlens.copyDeepLinkToRepo',
+	CopyDeepLinkToTag = 'gitlens.copyDeepLinkToTag',
 	CopyMessageToClipboard = 'gitlens.copyMessageToClipboard',
 	CopyRemoteBranchesUrl = 'gitlens.copyRemoteBranchesUrl',
 	CopyRemoteBranchUrl = 'gitlens.copyRemoteBranchUrl',
@@ -140,6 +170,7 @@ export const enum Commands {
 	GitCommandsSwitch = 'gitlens.gitCommands.switch',
 	GitCommandsTag = 'gitlens.gitCommands.tag',
 	GitCommandsWorktree = 'gitlens.gitCommands.worktree',
+	OpenOrCreateWorktreeForGHPR = 'gitlens.ghpr.views.openOrCreateWorktree',
 	PlusHide = 'gitlens.plus.hide',
 	PlusLearn = 'gitlens.plus.learn',
 	PlusLoginOrSignUp = 'gitlens.plus.loginOrSignUp',
@@ -367,6 +398,14 @@ export const enum GlyphChars {
 	SquareWithTopShadow = '\u2750',
 	Warning = '\u26a0',
 	ZeroWidthSpace = '\u200b',
+}
+
+export const enum LogLevel {
+	Off = 'off',
+	Error = 'error',
+	Warn = 'warn',
+	Info = 'info',
+	Debug = 'debug',
 }
 
 export const enum Schemes {

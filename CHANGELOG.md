@@ -10,14 +10,38 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this p
 
 - Adds new _Commit Graph_ features and improvements
   - Adds a new experimental minimap of commit activity to the _Commit Graph_
-  - Adds the ability to show upstream status (ahead/behind) on local branches with remotes
-  - Adds a context menu to the WIP row &mdash; closes [#2458](https://github.com/gitkraken/vscode-gitlens/issues/2458)
-  - Adds new settings
+  - Adds a new experimental _Changes_ column visualizing commit changes
+  - Adds markers to the _Commit Graph_ scroll area indicating the location of the selected row, search results, current branch, upstream, and more
+  - Adds the ability to show upstream (ahead/behind) status on local branches with an upstream
+    - Adds a double-click action on the status to pull (when behind) or push (when ahead) pending changes
+    - Adds context menu actions to _Push_, _Pull_, and _Fetch_ the local branch
+    - Adds a `gitlens.graph.showUpstreamStatus` setting to toggle upstream (ahead/behind) indicators on branches
+  - Adds the ability to show any associated pull requests with branches
+    - Adds a double-click action on the PR icon to open the PR in the browser
+    - Adds context menu actions to _Open Pull Request on Remote_ and _Copy_ the PR URL
     - Adds a `gitlens.graph.pullRequests.enabled` setting to toggle PR icons &mdash; closes [#2450](https://github.com/gitkraken/vscode-gitlens/issues/2450)
-    - Adds a `gitlens.graph.showUpstreamStatus` setting to toggle upstream indicators on branches
-  - Improves tooltips in the graph:
-    - Author and avatar tooltips now also show the contributor's email address, if available
-    - Date tooltips now always show both the absolute date and relative date
+  - Adds a context menu to the WIP row &mdash; closes [#2458](https://github.com/gitkraken/vscode-gitlens/issues/2458)
+  - Adds a double-click action on commit rows to open the _Commit Details_ view
+  - Improves Author and Avatar tooltips to now also show the contributor's email address, if available
+  - Improves Date tooltips to now always show both the absolute and relative date
+- Adds the ability to copy and share links directly to repositories, branches, commits, and tags in the _Commit Graph_
+  - Adds context menu actions to copy direct links in the _Share_ submenu
+- Improves the Worktree creation experience
+  - Adds a prompt after the worktree is created to choose how to open the worktree
+    - Adds a `worktrees.openAfterCreate` setting to specify how and when to open a worktree after it is created
+  - Ensures new worktrees are created from the "main" repo, if already in a worktree
+- Adds a new _remote_ command to the _Git Command Palette_ to add, prune, and remove remotes
+- Adds a _Open Worktree for Pull Request via GitLens..._ context menu command on pull requests in the _GitHub Pull Requests and Issues_ extension's views
+  - Opens an associated worktree, if one exists, otherwise it creates a new worktree for the pull request
+- Adds settings to control the format of commits in the GitLens views
+
+### Changed
+
+- Greatly reduces the size of many of GitLens' bundles which improves startup time
+  - GitLens' extension bundle for desktop (node) is now ~18% smaller
+  - GitLens' extension bundle for web (vscode.dev/github.dev) is now ~37% smaller
+  - GitLens' Commit Graph webview bundle is now ~31% smaller
+- Changes the _Contributors_ view to be shown by default on the _GitLens_ sidebar
 
 ### Removed
 
@@ -25,6 +49,7 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this p
 
 ### Fixed
 
+- Fixes [#2355](https://github.com/gitkraken/vscode-gitlens/issues/2355) - Search by changes stops working in version 13.x.x
 - Fixes [#2473](https://github.com/gitkraken/vscode-gitlens/issues/2473) - Commit graph status bar show wrong last fetched date
 - Fixes [#2409](https://github.com/gitkraken/vscode-gitlens/issues/2409) - Commit Graph Show Current Branch Only shows unrelated commits from other branches
 - Fixes an issue where pinning not being respected in Commit Details view

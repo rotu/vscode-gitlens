@@ -1,31 +1,61 @@
-// eslint-disable-next-line no-restricted-imports
-export { isEqual as areEqual } from 'lodash-es';
+export function areEqual(a: any, b: any): boolean {
+	if (a === b) return true;
+	if (a == null || b == null) return false;
 
-export function flatten(o: any, options: { prefix?: string; skipNulls: true; stringify: true }): Record<string, string>;
+	const aType = typeof a;
+	if (aType === typeof b && (aType === 'string' || aType === 'number' || aType === 'boolean')) return false;
+
+	return JSON.stringify(a) === JSON.stringify(b);
+}
+
 export function flatten(
 	o: any,
-	options: { prefix?: string; skipNulls: true; stringify?: false },
-): Record<string, NonNullable<any>>;
-export function flatten(
-	o: any,
-	options: { prefix?: string; skipNulls?: false; stringify: true },
-): Record<string, string | null>;
-export function flatten(
-	o: any,
-	options: { prefix?: string; skipNulls?: false; stringify: 'all' },
+	options: { arrays?: 'join' | 'spread'; prefix?: string; skipPaths?: string[]; skipNulls: true; stringify: true },
 ): Record<string, string>;
 export function flatten(
 	o: any,
-	options?: { prefix?: string; skipNulls?: boolean; stringify?: boolean },
+	options: { arrays?: 'join' | 'spread'; prefix?: string; skipPaths?: string[]; skipNulls: true; stringify?: false },
+): Record<string, NonNullable<any>>;
+export function flatten(
+	o: any,
+	options: { arrays?: 'join' | 'spread'; prefix?: string; skipPaths?: string[]; skipNulls?: false; stringify: true },
+): Record<string, string | null>;
+export function flatten(
+	o: any,
+	options: { arrays?: 'join' | 'spread'; prefix?: string; skipPaths?: string[]; skipNulls?: false; stringify: 'all' },
+): Record<string, string>;
+export function flatten(
+	o: any,
+	options?: {
+		arrays?: 'join' | 'spread';
+		prefix?: string;
+		skipPaths?: string[];
+		skipNulls?: boolean;
+		stringify?: boolean;
+	},
 ): Record<string, any>;
 export function flatten(
 	o: any,
-	options?: { prefix?: string; skipNulls?: boolean; stringify?: boolean | 'all' },
+	options?: {
+		arrays?: 'join' | 'spread';
+		prefix?: string;
+		skipPaths?: string[];
+		skipNulls?: boolean;
+		stringify?: boolean | 'all';
+	},
 ): Record<string, any> {
+	const skipPaths =
+		options?.skipPaths != null && options.skipPaths.length
+			? options?.prefix
+				? options.skipPaths.map(p => `${options.prefix}.${p}`)
+				: options.skipPaths
+			: undefined;
 	const skipNulls = options?.skipNulls ?? false;
 	const stringify = options?.stringify ?? false;
 
 	function flattenCore(flattened: Record<string, any>, key: string, value: any) {
+		if (skipPaths?.includes(key)) return;
+
 		if (Object(value) !== value) {
 			if (value == null) {
 				if (skipNulls) return;
@@ -33,15 +63,22 @@ export function flatten(
 				flattened[key] = stringify ? (stringify == 'all' ? JSON.stringify(value) : value ?? null) : value;
 			} else if (typeof value === 'string') {
 				flattened[key] = value;
+			} else if (stringify) {
+				flattened[key] =
+					typeof value === 'number' || typeof value === 'boolean' ? value : JSON.stringify(value);
 			} else {
-				flattened[key] = stringify ? JSON.stringify(value) : value;
+				flattened[key] = value;
 			}
 		} else if (Array.isArray(value)) {
 			const len = value.length;
 			if (len === 0) return;
 
-			for (let i = 0; i < len; i++) {
-				flattenCore(flattened, `${key}[${i}]`, value[i]);
+			if (options?.arrays === 'join') {
+				flattened[key] = value.join(',');
+			} else {
+				for (let i = 0; i < len; i++) {
+					flattenCore(flattened, `${key}[${i}]`, value[i]);
+				}
 			}
 		} else {
 			const entries = Object.entries(value);

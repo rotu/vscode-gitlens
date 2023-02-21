@@ -1,5 +1,4 @@
 import ansiRegex from 'ansi-regex';
-import { md5 as _md5 } from '@env/crypto';
 import { hrtime } from '@env/hrtime';
 import { CharCode } from '../constants';
 
@@ -295,10 +294,6 @@ export function isUpperAsciiLetter(code: number): boolean {
 	return code >= CharCode.A && code <= CharCode.Z;
 }
 
-export function md5(s: string, encoding: 'base64' | 'hex' = 'base64'): string {
-	return _md5(s, encoding);
-}
-
 export function pad(s: string, before: number = 0, after: number = 0, padding: string = '\u00a0') {
 	if (before === 0 && after === 0) return s;
 
@@ -380,9 +375,12 @@ export function splitLast(s: string, splitter: string) {
 }
 
 export function splitSingle(s: string, splitter: string) {
-	const parts = s.split(splitter, 1);
-	const first = parts[0];
-	return first.length === s.length ? parts : [first, s.substr(first.length + 1)];
+	const index = s.indexOf(splitter);
+	if (index === -1) return [s];
+
+	const start = s.substring(0, index);
+	const rest = s.substring(index + splitter.length);
+	return rest != null ? [start, rest] : [start];
 }
 
 export function truncate(s: string, truncateTo: number, ellipsis: string = '\u2026', width?: number) {

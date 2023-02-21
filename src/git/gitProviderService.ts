@@ -1,4 +1,3 @@
-import { encodingExists } from 'iconv-lite';
 import type {
 	CancellationToken,
 	ConfigurationChangeEvent,
@@ -19,6 +18,7 @@ import { setContext } from '../context';
 import { AccessDeniedError, ProviderNotFoundError } from '../errors';
 import type { FeatureAccess, Features, PlusFeatures, RepoFeatureAccess } from '../features';
 import { Logger } from '../logger';
+import { getLogScope } from '../logScope';
 import type { SubscriptionChangeEvent } from '../plus/subscription/subscriptionService';
 import type { RepoComparisonKey } from '../repositories';
 import { asRepoComparisonKey, Repositories } from '../repositories';
@@ -26,12 +26,13 @@ import type { Subscription } from '../subscription';
 import { isSubscriptionPaidPlan, SubscriptionPlanId } from '../subscription';
 import { groupByFilterMap, groupByMap, joinUnique } from '../system/array';
 import { gate } from '../system/decorators/gate';
-import { debug, getLogScope, log } from '../system/decorators/log';
+import { debug, log } from '../system/decorators/log';
 import { count, filter, first, flatMap, join, map, some } from '../system/iterable';
 import { getBestPath, getScheme, isAbsolute, maybeUri, normalizePath } from '../system/path';
 import { cancellable, fastestSettled, getSettledValue, isPromise, PromiseCancelledError } from '../system/promise';
 import { VisitedPathsTrie } from '../system/trie';
 import type {
+	GitCaches,
 	GitDir,
 	GitProvider,
 	GitProviderDescriptor,
@@ -82,6 +83,8 @@ const weightedDefaultBranches = new Map<string, number>([
 	['develop', 5],
 	['development', 1],
 ]);
+
+const defaultRepositoryId = '0';
 
 export type GitProvidersChangeEvent = {
 	readonly added: readonly GitProvider[];
@@ -917,69 +920,59 @@ export class GitProviderService implements Disposable {
 	}
 
 	@log()
-	async getWorkingUri(repoPath: string | Uri, uri: Uri) {
+	getWorkingUri(repoPath: string | Uri, uri: Uri) {
 		const { provider, path } = this.getProvider(repoPath);
 		return provider.getWorkingUri(path, uri);
 	}
 
 	@log()
-	addRemote(repoPath: string | Uri, name: string, url: string): Promise<void> {
+	addRemote(repoPath: string | Uri, name: string, url: string, options?: { fetch?: boolean }): Promise<void> {
 		const { provider, path } = this.getProvider(repoPath);
-		return provider.addRemote(path, name, url);
+		return provider.addRemote(path, name, url, options);
 	}
 
 	@log()
-	pruneRemote(repoPath: string | Uri, remoteName: string): Promise<void> {
+	pruneRemote(repoPath: string | Uri, name: string): Promise<void> {
 		const { provider, path } = this.getProvider(repoPath);
-		return provider.pruneRemote(path, remoteName);
+		return provider.pruneRemote(path, name);
 	}
 
 	@log()
-	async applyChangesToWorkingFile(uri: GitUri, ref1?: string, ref2?: string): Promise<void> {
+	removeRemote(repoPath: string | Uri, name: string): Promise<void> {
+		const { provider, path } = this.getProvider(repoPath);
+		return provider.removeRemote(path, name);
+	}
+
+	@log()
+	applyChangesToWorkingFile(uri: GitUri, ref1?: string, ref2?: string): Promise<void> {
 		const { provider } = this.getProvider(uri);
 		return provider.applyChangesToWorkingFile(uri, ref1, ref2);
 	}
 
 	@log()
-	async checkout(
-		repoPath: string,
-		ref: string,
-		options?: { createBranch?: string } | { path?: string },
-	): Promise<void> {
+	checkout(repoPath: string, ref: string, options?: { createBranch?: string } | { path?: string }): Promise<void> {
 		const { provider, path } = this.getProvider(repoPath);
 		return provider.checkout(path, ref, options);
 	}
 
 	@log({ singleLine: true })
-	resetCaches(
-		...affects: ('branches' | 'contributors' | 'providers' | 'remotes' | 'stashes' | 'status' | 'tags')[]
-	): void {
-		if (affects.length === 0 || affects.includes('providers')) {
+	resetCaches(...caches: GitCaches[]): void {
+		if (caches.length === 0 || caches.includes('providers')) {
 			this._bestRemotesCache.clear();
 		}
 
-		const repoAffects = affects.filter((c): c is 'branches' | 'remotes' => c === 'branches' || c === 'remotes');
-		// Delegate to the repos, if we are clearing everything or one of the per-repo caches
-		if (affects.length === 0 || repoAffects.length > 0) {
-			for (const repo of this.repositories) {
-				repo.resetCaches(...repoAffects);
-			}
-		}
-
-		for (const provider of this._providers.values()) {
-			provider.resetCaches(...affects);
-		}
+		this.container.events.fire('git:cache:reset', { caches: caches });
 	}
 
 	@log<GitProviderService['excludeIgnoredUris']>({ args: { 1: uris => uris.length } })
-	async excludeIgnoredUris(repoPath: string, uris: Uri[]): Promise<Uri[]> {
+	excludeIgnoredUris(repoPath: string, uris: Uri[]): Promise<Uri[]> {
 		const { provider, path } = this.getProvider(repoPath);
 		return provider.excludeIgnoredUris(path, uris);
 	}
 
 	@gate()
 	@log()
-	async fetch(
+	fetch(
 		repoPath: string,
 		options?: { all?: boolean; branch?: GitBranchReference; prune?: boolean; pull?: boolean; remote?: string },
 	): Promise<void> {
@@ -1343,9 +1336,15 @@ export class GitProviderService implements Disposable {
 	}
 
 	@log()
-	async getOldestUnpushedRefForFile(repoPath: string | Uri, uri: Uri): Promise<string | undefined> {
+	async getConfig(repoPath: string, key: string): Promise<string | undefined> {
 		const { provider, path } = this.getProvider(repoPath);
-		return provider.getOldestUnpushedRefForFile(path, uri);
+		return provider.getConfig?.(path, key);
+	}
+
+	@log()
+	async setConfig(repoPath: string, key: string, value: string | undefined): Promise<void> {
+		const { provider, path } = this.getProvider(repoPath);
+		return provider.setConfig?.(path, key, value);
 	}
 
 	@log()
@@ -1539,6 +1538,12 @@ export class GitProviderService implements Disposable {
 
 		const { provider, path } = this.getProvider(repoPath);
 		return provider.getNextComparisonUris(path, uri, ref, skip);
+	}
+
+	@log()
+	async getOldestUnpushedRefForFile(repoPath: string | Uri, uri: Uri): Promise<string | undefined> {
+		const { provider, path } = this.getProvider(repoPath);
+		return provider.getOldestUnpushedRefForFile(path, uri);
 	}
 
 	@log()
@@ -1936,7 +1941,10 @@ export class GitProviderService implements Disposable {
 	}
 
 	@log<GitProviderService['getOrOpenRepository']>({ exit: r => `returned ${r?.path}` })
-	async getOrOpenRepository(uri: Uri, detectNested?: boolean): Promise<Repository | undefined> {
+	async getOrOpenRepository(
+		uri: Uri,
+		options?: { closeOnOpen?: boolean; detectNested?: boolean },
+	): Promise<Repository | undefined> {
 		const scope = getLogScope();
 
 		const path = getBestPath(uri);
@@ -1945,7 +1953,7 @@ export class GitProviderService implements Disposable {
 
 		let isDirectory: boolean | undefined;
 
-		detectNested = detectNested ?? configuration.get('detectNestedRepositories', uri);
+		const detectNested = options?.detectNested ?? configuration.get('detectNestedRepositories', uri);
 		if (!detectNested) {
 			if (repository != null) return repository;
 		} else if (this._visitedPaths.has(path)) {
@@ -1986,7 +1994,9 @@ export class GitProviderService implements Disposable {
 						CoreGitConfiguration.AutoRepositoryDetection,
 					) ?? true;
 
-				const closed = autoRepositoryDetection !== true && autoRepositoryDetection !== 'openEditors';
+				const closed =
+					options?.closeOnOpen ??
+					(autoRepositoryDetection !== true && autoRepositoryDetection !== 'openEditors');
 
 				Logger.log(scope, `Repository found in '${repoUri.toString(true)}'`);
 				const repositories = provider.openRepository(root?.folder, repoUri, false, undefined, closed);
@@ -2118,6 +2128,15 @@ export class GitProviderService implements Disposable {
 	getRevisionContent(repoPath: string | Uri, path: string, ref: string): Promise<Uint8Array | undefined> {
 		const { provider, path: rp } = this.getProvider(repoPath);
 		return provider.getRevisionContent(rp, path, ref);
+	}
+
+	@log()
+	async getUniqueRepositoryId(repoPath: string | Uri): Promise<string | undefined> {
+		const { provider, path } = this.getProvider(repoPath);
+		const id = await provider.getUniqueRepositoryId(path);
+		if (id != null) return id;
+
+		return defaultRepositoryId;
 	}
 
 	@log({ args: { 1: false } })
@@ -2361,6 +2380,15 @@ export class GitProviderService implements Disposable {
 	}
 
 	@log()
+	async getWorktree(
+		repoPath: string | Uri,
+		predicate: (w: GitWorktree) => boolean,
+	): Promise<GitWorktree | undefined> {
+		const { provider, path } = this.getProvider(repoPath);
+		return ((await provider.getWorktrees?.(path)) ?? []).find(predicate);
+	}
+
+	@log()
 	async getWorktrees(repoPath: string | Uri): Promise<GitWorktree[]> {
 		const { provider, path } = this.getProvider(repoPath);
 		return (await provider.getWorktrees?.(path)) ?? [];
@@ -2408,10 +2436,5 @@ export class GitProviderService implements Disposable {
 	getOrOpenScmRepository(repoPath: string): Promise<ScmRepository | undefined> {
 		const { provider, path } = this.getProvider(repoPath);
 		return provider.getOrOpenScmRepository(path);
-	}
-
-	static getEncoding(uri: Uri): string {
-		const encoding = configuration.getAny<string>('files.encoding', uri);
-		return encoding != null && encodingExists(encoding) ? encoding : 'utf8';
 	}
 }

@@ -1,3 +1,4 @@
+import { LogLevel } from './constants';
 import type { DateTimeFormat } from './system/date';
 
 export interface Config {
@@ -35,6 +36,9 @@ export interface Config {
 		scrollable: boolean;
 	};
 	debug: boolean;
+	deepLinks: {
+		schemeOverride: boolean | string | null;
+	};
 	defaultDateFormat: DateTimeFormat | string | null;
 	defaultDateLocale: string | null;
 	defaultDateShortFormat: DateTimeFormat | string | null;
@@ -173,6 +177,7 @@ export interface Config {
 	};
 	worktrees: {
 		defaultLocation: string | null;
+		openAfterCreate: 'always' | 'alwaysNewWindow' | 'onlyWhenEmpty' | 'never' | 'prompt';
 		promptForLocation: boolean;
 	};
 	advanced: AdvancedConfig;
@@ -282,6 +287,16 @@ export const enum FileAnnotationType {
 export const enum GitCommandSorting {
 	Name = 'name',
 	Usage = 'usage',
+}
+
+export const enum GraphScrollMarkerTypes {
+	Selection = 'selection',
+	Head = 'head',
+	LocalBranches = 'localBranches',
+	RemoteBranches = 'remoteBranches',
+	Highlights = 'highlights',
+	Stashes = 'stashes',
+	Tags = 'tags',
 }
 
 export const enum GravatarDefaultStyle {
@@ -397,6 +412,10 @@ export interface GraphConfig {
 	scrollRowPadding: number;
 	showDetailsView: 'open' | 'selection' | false;
 	showGhostRefsOnRowHover: boolean;
+	scrollMarkers: {
+		enabled: boolean;
+		additionalTypes: GraphScrollMarkerTypes[];
+	};
 	pullRequests: {
 		enabled: boolean;
 	};
@@ -576,6 +595,8 @@ export interface ViewsCommonConfig {
 		commits: {
 			label: string;
 			description: string;
+			tooltip: string;
+			tooltipWithStatus: string;
 		};
 		files: {
 			label: string;
@@ -777,4 +798,19 @@ export interface ViewsFilesConfig {
 	compact: boolean;
 	layout: ViewFilesLayout;
 	threshold: number;
+}
+
+export function fromOutputLevel(level: LogLevel | OutputLevel): LogLevel {
+	switch (level) {
+		case OutputLevel.Silent:
+			return LogLevel.Off;
+		case OutputLevel.Errors:
+			return LogLevel.Error;
+		case OutputLevel.Verbose:
+			return LogLevel.Info;
+		case OutputLevel.Debug:
+			return LogLevel.Debug;
+		default:
+			return level;
+	}
 }

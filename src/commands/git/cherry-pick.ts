@@ -3,23 +3,28 @@ import type { GitBranch } from '../../git/models/branch';
 import type { GitLog } from '../../git/models/log';
 import { GitReference, GitRevision } from '../../git/models/reference';
 import type { Repository } from '../../git/models/repository';
-import { FlagsQuickPickItem } from '../../quickpicks/items/flags';
+import type { FlagsQuickPickItem } from '../../quickpicks/items/flags';
+import { createFlagsQuickPickItem } from '../../quickpicks/items/flags';
 import type { ViewsWithRepositoryFolders } from '../../views/viewBase';
 import type {
 	PartialStepState,
 	QuickPickStep,
 	StepGenerator,
+	StepResult,
 	StepResultGenerator,
 	StepSelection,
 	StepState,
 } from '../quickCommand';
 import {
 	appendReposToTitle,
+	canPickStepContinue,
+	createConfirmStep,
+	endSteps,
 	pickBranchOrTagStep,
 	pickCommitsStep,
 	pickRepositoryStep,
 	QuickCommand,
-	StepResult,
+	StepResultBreak,
 } from '../quickCommand';
 
 interface Context {
@@ -120,7 +125,7 @@ export class CherryPickGitCommand extends QuickCommand<State> {
 				} else {
 					const result = yield* pickRepositoryStep(state, context);
 					// Always break on the first step (so we will go back)
-					if (result === StepResult.Break) break;
+					if (result === StepResultBreak) break;
 
 					state.repo = result;
 				}
@@ -147,7 +152,7 @@ export class CherryPickGitCommand extends QuickCommand<State> {
 						value: context.selectedBranchOrTag == null ? state.references?.[0]?.ref : undefined,
 					},
 				);
-				if (result === StepResult.Break) {
+				if (result === StepResultBreak) {
 					// If we skipped the previous step, make sure we back up past it
 					if (skippedStepOne) {
 						state.counter--;
@@ -190,43 +195,43 @@ export class CherryPickGitCommand extends QuickCommand<State> {
 								  })}`,
 					},
 				);
-				if (result === StepResult.Break) continue;
+				if (result === StepResultBreak) continue;
 
 				state.references = result;
 			}
 
 			if (this.confirm(state.confirm)) {
 				const result = yield* this.confirmStep(state as CherryPickStepState, context);
-				if (result === StepResult.Break) continue;
+				if (result === StepResultBreak) continue;
 
 				state.flags = result;
 			}
 
-			QuickCommand.endSteps(state);
+			endSteps(state);
 			this.execute(state as CherryPickStepState<State<GitReference[]>>);
 		}
 
-		return state.counter < 0 ? StepResult.Break : undefined;
+		return state.counter < 0 ? StepResultBreak : undefined;
 	}
 
 	private *confirmStep(state: CherryPickStepState, context: Context): StepResultGenerator<Flags[]> {
-		const step: QuickPickStep<FlagsQuickPickItem<Flags>> = QuickCommand.createConfirmStep(
+		const step: QuickPickStep<FlagsQuickPickItem<Flags>> = createConfirmStep(
 			appendReposToTitle(`Confirm ${context.title}`, state, context),
 			[
-				FlagsQuickPickItem.create<Flags>(state.flags, [], {
+				createFlagsQuickPickItem<Flags>(state.flags, [], {
 					label: this.title,
 					detail: `Will apply ${GitReference.toString(state.references)} to ${GitReference.toString(
 						context.destination,
 					)}`,
 				}),
-				FlagsQuickPickItem.create<Flags>(state.flags, ['--edit'], {
+				createFlagsQuickPickItem<Flags>(state.flags, ['--edit'], {
 					label: `${this.title} & Edit`,
 					description: '--edit',
 					detail: `Will edit and apply ${GitReference.toString(state.references)} to ${GitReference.toString(
 						context.destination,
 					)}`,
 				}),
-				FlagsQuickPickItem.create<Flags>(state.flags, ['--no-commit'], {
+				createFlagsQuickPickItem<Flags>(state.flags, ['--no-commit'], {
 					label: `${this.title} without Committing`,
 					description: '--no-commit',
 					detail: `Will apply ${GitReference.toString(state.references)} to ${GitReference.toString(
@@ -237,6 +242,6 @@ export class CherryPickGitCommand extends QuickCommand<State> {
 			context,
 		);
 		const selection: StepSelection<typeof step> = yield step;
-		return QuickCommand.canPickStepContinue(step, state, selection) ? selection[0].item : StepResult.Break;
+		return canPickStepContinue(step, state, selection) ? selection[0].item : StepResultBreak;
 	}
 }

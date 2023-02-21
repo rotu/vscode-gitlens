@@ -29,6 +29,7 @@ import { setContext } from '../../context';
 import { AccountValidationError } from '../../errors';
 import type { RepositoriesChangeEvent } from '../../git/gitProviderService';
 import { Logger } from '../../logger';
+import { getLogScope } from '../../logScope';
 import type { Subscription } from '../../subscription';
 import {
 	computeSubscriptionState,
@@ -46,7 +47,7 @@ import {
 import { executeCommand, registerCommand } from '../../system/command';
 import { createFromDateDelta } from '../../system/date';
 import { gate } from '../../system/decorators/gate';
-import { debug, getLogScope, log } from '../../system/decorators/log';
+import { debug, log } from '../../system/decorators/log';
 import { memoize } from '../../system/decorators/memoize';
 import type { Deferrable } from '../../system/function';
 import { debounce, once } from '../../system/function';
@@ -328,12 +329,16 @@ export class SubscriptionService implements Disposable {
 			plan: {
 				actual: getSubscriptionPlan(
 					SubscriptionPlanId.Free,
+					false,
+					undefined,
 					this._subscription.plan?.actual?.startedOn != null
 						? new Date(this._subscription.plan.actual.startedOn)
 						: undefined,
 				),
 				effective: getSubscriptionPlan(
 					SubscriptionPlanId.Free,
+					false,
+					undefined,
 					this._subscription.plan?.effective?.startedOn != null
 						? new Date(this._subscription.plan.actual.startedOn)
 						: undefined,
@@ -484,7 +489,7 @@ export class SubscriptionService implements Disposable {
 			...this._subscription,
 			plan: {
 				...this._subscription.plan,
-				effective: getSubscriptionPlan(SubscriptionPlanId.Pro, startedOn, expiresOn),
+				effective: getSubscriptionPlan(SubscriptionPlanId.Pro, false, undefined, startedOn, expiresOn),
 			},
 			previewTrial: previewTrial,
 		});
@@ -613,6 +618,8 @@ export class SubscriptionService implements Disposable {
 			name: data.user.name,
 			email: data.user.email,
 			verified: data.user.status === 'activated',
+			createdOn: data.user.createdDate,
+			organizationIds: data.orgIds ?? [],
 		};
 
 		const effectiveLicenses = Object.entries(data.licenses.effectiveLicenses) as [GKLicenseType, GKLicense][];
@@ -633,6 +640,8 @@ export class SubscriptionService implements Disposable {
 			const [licenseType, license] = paidLicenses[0];
 			actual = getSubscriptionPlan(
 				convertLicenseTypeToPlanId(licenseType),
+				isBundleLicenseType(licenseType),
+				license.organizationId,
 				new Date(license.latestStartDate),
 				new Date(license.latestEndDate),
 			);
@@ -641,6 +650,8 @@ export class SubscriptionService implements Disposable {
 		if (actual == null) {
 			actual = getSubscriptionPlan(
 				SubscriptionPlanId.FreePlus,
+				false,
+				undefined,
 				data.user.firstGitLensCheckIn != null ? new Date(data.user.firstGitLensCheckIn) : undefined,
 			);
 		}
@@ -660,6 +671,8 @@ export class SubscriptionService implements Disposable {
 			const [licenseType, license] = effectiveLicenses[0];
 			effective = getSubscriptionPlan(
 				convertLicenseTypeToPlanId(licenseType),
+				isBundleLicenseType(licenseType),
+				license.organizationId,
 				new Date(license.latestStartDate),
 				new Date(license.latestEndDate),
 			);
@@ -822,8 +835,8 @@ export class SubscriptionService implements Disposable {
 		if (subscription == null) {
 			subscription = {
 				plan: {
-					actual: getSubscriptionPlan(SubscriptionPlanId.Free),
-					effective: getSubscriptionPlan(SubscriptionPlanId.Free),
+					actual: getSubscriptionPlan(SubscriptionPlanId.Free, false, undefined),
+					effective: getSubscriptionPlan(SubscriptionPlanId.Free, false, undefined),
 				},
 				account: undefined,
 				state: SubscriptionState.Free,
@@ -838,6 +851,8 @@ export class SubscriptionService implements Disposable {
 					...subscription.plan,
 					effective: getSubscriptionPlan(
 						SubscriptionPlanId.Pro,
+						false,
+						undefined,
 						new Date(subscription.previewTrial.startedOn),
 						new Date(subscription.previewTrial.expiresOn),
 					),
@@ -867,45 +882,12 @@ export class SubscriptionService implements Disposable {
 		if (matches) return;
 
 		queueMicrotask(() => {
-			this.container.telemetry.setGlobalAttributes({
-				'account.id': subscription!.account?.id,
-				'account.verified': subscription!.account?.verified,
-				'subscription.actual.id': subscription!.plan.actual.id,
-				'subscription.actual.startedOn': subscription!.plan.actual.startedOn,
-				'subscription.actual.expiresOn': subscription!.plan.actual.expiresOn,
-				'subscription.effective.id': subscription!.plan.effective.id,
-				'subscription.effective.startedOn': subscription!.plan.effective.startedOn,
-				'subscription.effective.expiresOn': subscription!.plan.effective.expiresOn,
-				'subscription.state': subscription!.state,
-			});
+			let data = flattenSubscription(subscription);
+			this.container.telemetry.setGlobalAttributes(data);
 
-			const data = {
-				'account.id': subscription!.account?.id,
-				'account.verified': subscription!.account?.verified,
-				...flatten(subscription!.plan, { prefix: 'subscription', skipNulls: true, stringify: true }),
-				...flatten(subscription!.previewTrial, {
-					prefix: 'subscription.previewTrial',
-					skipNulls: true,
-					stringify: true,
-				}),
-				'subscription.state': subscription!.state,
-				...(!matches && previous != null
-					? {
-							'previous.account.id': previous.account?.id,
-							'previous.account.verified': previous.account?.verified,
-							...flatten(previous.plan, {
-								prefix: 'previous.subscription',
-								skipNulls: true,
-								stringify: true,
-							}),
-							...flatten(previous.previewTrial, {
-								prefix: 'previous.subscription.previewTrial',
-								skipNulls: true,
-								stringify: true,
-							}),
-							'previous.subscription.state': previous.state,
-					  }
-					: {}),
+			data = {
+				...data,
+				...(!matches ? flattenSubscription(previous, 'previous') : {}),
 			};
 
 			this.container.telemetry.sendEvent(previous == null ? 'subscription' : 'subscription/changed', data);
@@ -1062,14 +1044,49 @@ export class SubscriptionService implements Disposable {
 	}
 }
 
+function flattenSubscription(subscription: Optional<Subscription, 'state'> | undefined, prefix?: string) {
+	if (subscription == null) return {};
+
+	return {
+		...flatten(subscription.account, {
+			arrays: 'join',
+			prefix: `${prefix ? `${prefix}.` : ''}account`,
+			skipPaths: ['name', 'email'],
+			skipNulls: true,
+			stringify: true,
+		}),
+		...flatten(subscription.plan, {
+			prefix: `${prefix ? `${prefix}.` : ''}subscription`,
+			skipPaths: ['actual.name', 'effective.name'],
+			skipNulls: true,
+			stringify: true,
+		}),
+		...flatten(subscription.previewTrial, {
+			prefix: `${prefix ? `${prefix}.` : ''}subscription.previewTrial`,
+			skipPaths: ['actual.name', 'effective.name'],
+			skipNulls: true,
+			stringify: true,
+		}),
+		'subscription.state': subscription.state,
+	};
+}
+
 function assertSubscriptionState(subscription: Optional<Subscription, 'state'>): asserts subscription is Subscription {}
 
 interface GKLicenseInfo {
-	user: GKUser;
-	licenses: {
-		paidLicenses: Record<GKLicenseType, GKLicense>;
-		effectiveLicenses: Record<GKLicenseType, GKLicense>;
+	readonly user: GKUser;
+	readonly licenses: {
+		readonly paidLicenses: Record<GKLicenseType, GKLicense>;
+		readonly effectiveLicenses: Record<GKLicenseType, GKLicense>;
 	};
+	readonly orgIds?: string[];
+}
+
+interface GKLicense {
+	readonly latestStatus: 'active' | 'canceled' | 'cancelled' | 'expired' | 'in_trial' | 'non_renewing' | 'trial';
+	readonly latestStartDate: string;
+	readonly latestEndDate: string;
+	readonly organizationId: string | undefined;
 }
 
 type GKLicenseType =
@@ -1083,6 +1100,15 @@ type GKLicenseType =
 	| 'bundle-hosted-enterprise'
 	| 'bundle-self-hosted-enterprise'
 	| 'bundle-standalone-enterprise';
+
+interface GKUser {
+	readonly id: string;
+	readonly name: string;
+	readonly email: string;
+	readonly status: 'activated' | 'pending';
+	readonly createdDate: string;
+	readonly firstGitLensCheckIn?: string;
+}
 
 function convertLicenseTypeToPlanId(licenseType: GKLicenseType): SubscriptionPlanId {
 	switch (licenseType) {
@@ -1104,6 +1130,19 @@ function convertLicenseTypeToPlanId(licenseType: GKLicenseType): SubscriptionPla
 	}
 }
 
+function isBundleLicenseType(licenseType: GKLicenseType): boolean {
+	switch (licenseType) {
+		case 'bundle-pro':
+		case 'bundle-teams':
+		case 'bundle-hosted-enterprise':
+		case 'bundle-self-hosted-enterprise':
+		case 'bundle-standalone-enterprise':
+			return true;
+		default:
+			return false;
+	}
+}
+
 function licenseStatusPriority(status: GKLicense['latestStatus']): number {
 	switch (status) {
 		case 'active':
@@ -1118,18 +1157,4 @@ function licenseStatusPriority(status: GKLicense['latestStatus']): number {
 		case 'non_renewing':
 			return 0;
 	}
-}
-
-interface GKLicense {
-	latestStatus: 'active' | 'canceled' | 'cancelled' | 'expired' | 'in_trial' | 'non_renewing' | 'trial';
-	latestStartDate: string;
-	latestEndDate: string;
-}
-
-interface GKUser {
-	id: string;
-	name: string;
-	email: string;
-	status: 'activated' | 'pending';
-	firstGitLensCheckIn?: string;
 }

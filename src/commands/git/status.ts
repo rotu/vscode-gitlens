@@ -8,7 +8,7 @@ import { GitCommandQuickPickItem } from '../../quickpicks/items/gitCommands';
 import { pad } from '../../system/string';
 import type { ViewsWithRepositoryFolders } from '../../views/viewBase';
 import type { PartialStepState, StepGenerator, StepState } from '../quickCommand';
-import { pickRepositoryStep, QuickCommand, showRepositoryStatusStep, StepResult } from '../quickCommand';
+import { endSteps, pickRepositoryStep, QuickCommand, showRepositoryStatusStep, StepResultBreak } from '../quickCommand';
 
 interface Context {
 	repos: Repository[];
@@ -75,7 +75,7 @@ export class StatusGitCommand extends QuickCommand<State> {
 				} else {
 					const result = yield* pickRepositoryStep(state, context);
 					// Always break on the first step (so we will go back)
-					if (result === StepResult.Break) break;
+					if (result === StepResultBreak) break;
 
 					state.repo = result;
 				}
@@ -96,7 +96,7 @@ export class StatusGitCommand extends QuickCommand<State> {
 			)}`;
 
 			const result = yield* showRepositoryStatusStep(state as StatusStepState, context);
-			if (result === StepResult.Break) {
+			if (result === StepResultBreak) {
 				// If we skipped the previous step, make sure we back up past it
 				if (skippedStepOne) {
 					state.counter--;
@@ -108,15 +108,15 @@ export class StatusGitCommand extends QuickCommand<State> {
 			if (result instanceof GitCommandQuickPickItem) {
 				const r = yield* result.executeSteps(this.pickedVia);
 				state.counter--;
-				if (r === StepResult.Break) {
-					QuickCommand.endSteps(state);
+				if (r === StepResultBreak) {
+					endSteps(state);
 				}
 
 				continue;
 			}
 
 			if (result instanceof CommandQuickPickItem) {
-				QuickCommand.endSteps(state);
+				endSteps(state);
 
 				void result.execute();
 				break;

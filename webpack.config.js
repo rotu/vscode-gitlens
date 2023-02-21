@@ -2,28 +2,29 @@
 /** @typedef {import('webpack').Configuration} WebpackConfig **/
 
 const { spawnSync } = require('child_process');
+const BundleAnalyzerPlugin = require('webpack-bundle-analyzer').BundleAnalyzerPlugin;
 const CircularDependencyPlugin = require('circular-dependency-plugin');
 const { CleanWebpackPlugin: CleanPlugin } = require('clean-webpack-plugin');
 const CopyPlugin = require('copy-webpack-plugin');
 const CspHtmlPlugin = require('csp-html-webpack-plugin');
+const CssMinimizerPlugin = require('css-minimizer-webpack-plugin');
 const esbuild = require('esbuild');
+const { EsbuildPlugin } = require('esbuild-loader');
 const { generateFonts } = require('fantasticon');
 const ForkTsCheckerPlugin = require('fork-ts-checker-webpack-plugin');
 const fs = require('fs');
 const HtmlPlugin = require('html-webpack-plugin');
 const ImageMinimizerPlugin = require('image-minimizer-webpack-plugin');
-const JSON5 = require('json5');
 const MiniCssExtractPlugin = require('mini-css-extract-plugin');
 const path = require('path');
 const { validate } = require('schema-utils');
 const TerserPlugin = require('terser-webpack-plugin');
-const { WebpackError, webpack, optimize } = require('webpack');
-const CssMinimizerPlugin = require('css-minimizer-webpack-plugin');
-const BundleAnalyzerPlugin = require('webpack-bundle-analyzer').BundleAnalyzerPlugin;
+const { DefinePlugin, optimize, WebpackError } = require('webpack');
+const WebpackRequireFromPlugin = require('webpack-require-from');
 
 module.exports =
 	/**
-	 * @param {{ analyzeBundle?: boolean; analyzeDeps?: boolean; esbuild?: boolean; useSharpForImageOptimization?: boolean } | undefined } env
+	 * @param {{ analyzeBundle?: boolean; analyzeDeps?: boolean; esbuild?: boolean; esbuildMinify?: boolean; useSharpForImageOptimization?: boolean } | undefined } env
 	 * @param {{ mode: 'production' | 'development' | 'none' | undefined }} argv
 	 * @returns { WebpackConfig[] }
 	 */
@@ -34,6 +35,7 @@ module.exports =
 			analyzeBundle: false,
 			analyzeDeps: false,
 			esbuild: true,
+			esbuildMinify: false,
 			useSharpForImageOptimization: true,
 			...env,
 		};
@@ -48,7 +50,7 @@ module.exports =
 /**
  * @param { 'node' | 'webworker' } target
  * @param { 'production' | 'development' | 'none' } mode
- * @param {{ analyzeBundle?: boolean; analyzeDeps?: boolean; esbuild?: boolean; useSharpForImageOptimization?: boolean } } env
+ * @param {{ analyzeBundle?: boolean; analyzeDeps?: boolean; esbuild?: boolean; esbuildMinify?: boolean; useSharpForImageOptimization?: boolean }} env
  * @returns { WebpackConfig }
  */
 function getExtensionConfig(target, mode, env) {
@@ -125,7 +127,20 @@ function getExtensionConfig(target, mode, env) {
 	}
 
 	if (env.analyzeBundle) {
-		plugins.push(new BundleAnalyzerPlugin({ analyzerPort: 'auto' }));
+		const out = path.join(__dirname, 'out');
+		if (!fs.existsSync(out)) {
+			fs.mkdirSync(out);
+		}
+
+		plugins.push(
+			new BundleAnalyzerPlugin({
+				analyzerMode: 'static',
+				generateStatsFile: true,
+				openAnalyzer: false,
+				reportFilename: path.join(out, `extension-${target}-bundle-report.html`),
+				statsFilename: path.join(out, 'stats.json'),
+			}),
+		);
 	}
 
 	return {
@@ -137,42 +152,43 @@ function getExtensionConfig(target, mode, env) {
 		target: target,
 		devtool: mode === 'production' ? false : 'source-map',
 		output: {
-			path: target === 'webworker' ? path.join(__dirname, 'dist', 'browser') : path.join(__dirname, 'dist'),
-			libraryTarget: 'commonjs2',
-			filename: 'gitlens.js',
 			chunkFilename: 'feature-[name].js',
+			filename: 'gitlens.js',
+			libraryTarget: 'commonjs2',
+			path: target === 'webworker' ? path.join(__dirname, 'dist', 'browser') : path.join(__dirname, 'dist'),
 		},
 		optimization: {
 			minimizer: [
-				new TerserPlugin(
-					env.esbuild
-						? {
-								minify: TerserPlugin.esbuildMinify,
-								terserOptions: {
-									// @ts-ignore
-									drop: ['debugger'],
-									format: 'cjs',
-									minify: true,
-									treeShaking: true,
-									// Keep the class names otherwise @log won't provide a useful name
-									keepNames: true,
-									target: 'es2020',
-								},
-						  }
-						: {
-								extractComments: false,
-								parallel: true,
-								terserOptions: {
-									compress: {
-										drop_debugger: true,
-									},
+				env.esbuildMinify
+					? new EsbuildPlugin({
+							drop: ['debugger'],
+							format: 'cjs',
+							// Keep the class names otherwise @log won't provide a useful name
+							keepNames: true,
+							legalComments: 'none',
+							minify: true,
+							target: 'es2022',
+							treeShaking: true,
+					  })
+					: new TerserPlugin({
+							extractComments: false,
+							parallel: true,
+							terserOptions: {
+								compress: {
+									drop_debugger: true,
 									ecma: 2020,
-									// Keep the class names otherwise @log won't provide a useful name
-									keep_classnames: true,
 									module: true,
 								},
-						  },
-				),
+								ecma: 2020,
+								format: {
+									comments: false,
+									ecma: 2020,
+								},
+								// Keep the class names otherwise @log won't provide a useful name
+								keep_classnames: true,
+								module: true,
+							},
+					  }),
 			],
 			splitChunks:
 				target === 'webworker'
@@ -199,14 +215,12 @@ function getExtensionConfig(target, mode, env) {
 						? {
 								loader: 'esbuild-loader',
 								options: {
+									format: 'esm',
 									implementation: esbuild,
-									loader: 'tsx',
-									target: ['es2020', 'chrome91', 'node14.16'],
-									tsconfigRaw: resolveTSConfig(
-										path.join(
-											__dirname,
-											target === 'webworker' ? 'tsconfig.browser.json' : 'tsconfig.json',
-										),
+									target: ['es2022', 'chrome102', 'node16.14.2'],
+									tsconfig: path.join(
+										__dirname,
+										target === 'webworker' ? 'tsconfig.browser.json' : 'tsconfig.json',
 									),
 								},
 						  }
@@ -229,6 +243,11 @@ function getExtensionConfig(target, mode, env) {
 				'@env': path.resolve(__dirname, 'src', 'env', target === 'webworker' ? 'browser' : target),
 				// This dependency is very large, and isn't needed for our use-case
 				tr46: path.resolve(__dirname, 'patches', 'tr46.js'),
+				// Stupid dependency that is used by `http-proxy-agent`
+				debug:
+					target === 'webworker'
+						? path.resolve(__dirname, 'node_modules', 'debug', 'src', 'browser.js')
+						: path.resolve(__dirname, 'node_modules', 'debug', 'src', 'node.js'),
 			},
 			fallback:
 				target === 'webworker'
@@ -238,12 +257,17 @@ function getExtensionConfig(target, mode, env) {
 			extensions: ['.ts', '.tsx', '.js', '.jsx', '.json'],
 		},
 		plugins: plugins,
-		infrastructureLogging: {
-			level: 'log', // enables logging required for problem matchers
-		},
+		infrastructureLogging:
+			mode === 'production'
+				? undefined
+				: {
+						level: 'log', // enables logging required for problem matchers
+				  },
 		stats: {
 			preset: 'errors-warnings',
 			assets: true,
+			assetsSort: 'name',
+			assetsSpace: 100,
 			colors: true,
 			env: true,
 			errorsCount: true,
@@ -255,7 +279,7 @@ function getExtensionConfig(target, mode, env) {
 
 /**
  * @param { 'production' | 'development' | 'none' } mode
- * @param {{ analyzeBundle?: boolean; analyzeDeps?: boolean; esbuild?: boolean; useSharpForImageOptimization?: boolean } } env
+ * @param {{ analyzeBundle?: boolean; analyzeDeps?: boolean; esbuild?: boolean; esbuildMinify?: boolean; useSharpForImageOptimization?: boolean }} env
  * @returns { WebpackConfig }
  */
 function getWebviewsConfig(mode, env) {
@@ -274,6 +298,9 @@ function getWebviewsConfig(mode, env) {
 				  }
 				: undefined,
 		),
+		new DefinePlugin({
+			DEBUG: mode === 'development',
+		}),
 		new ForkTsCheckerPlugin({
 			async: false,
 			eslint: {
@@ -290,6 +317,9 @@ function getWebviewsConfig(mode, env) {
 			typescript: {
 				configFile: path.join(basePath, 'tsconfig.json'),
 			},
+		}),
+		new WebpackRequireFromPlugin({
+			variableName: 'webpackResourceBasePath',
 		}),
 		new MiniCssExtractPlugin({ filename: '[name].css' }),
 		getHtmlPlugin('commitDetails', false, mode, env),
@@ -333,6 +363,23 @@ function getWebviewsConfig(mode, env) {
 		);
 	}
 
+	if (env.analyzeBundle) {
+		const out = path.join(__dirname, 'out');
+		if (!fs.existsSync(out)) {
+			fs.mkdirSync(out);
+		}
+
+		plugins.push(
+			new BundleAnalyzerPlugin({
+				analyzerMode: 'static',
+				generateStatsFile: true,
+				openAnalyzer: false,
+				reportFilename: path.join(out, 'webview-bundle-report.html'),
+				statsFilename: path.join(out, 'stats.json'),
+			}),
+		);
+	}
+
 	return {
 		name: 'webviews',
 		context: basePath,
@@ -349,46 +396,51 @@ function getWebviewsConfig(mode, env) {
 		target: 'web',
 		devtool: mode === 'production' ? false : 'source-map',
 		output: {
+			chunkFilename: 'feature-[name].js',
 			filename: '[name].js',
+			libraryTarget: 'module',
 			path: path.join(__dirname, 'dist', 'webviews'),
 			publicPath: '#{root}/dist/webviews/',
+		},
+		experiments: {
+			outputModule: true,
 		},
 		optimization: {
 			minimizer:
 				mode === 'production'
 					? [
-							new TerserPlugin(
-								env.esbuild
-									? {
-											minify: TerserPlugin.esbuildMinify,
-											terserOptions: {
-												// @ts-ignore
-												drop: ['debugger', 'console'],
-												// @ts-ignore
-												format: 'esm',
-												minify: true,
-												treeShaking: true,
-												// // Keep the class names otherwise @log won't provide a useful name
-												// keepNames: true,
-												target: 'es2020',
-											},
-									  }
-									: {
-											extractComments: false,
-											parallel: true,
-											// @ts-ignore
-											terserOptions: {
-												compress: {
-													drop_debugger: true,
-													drop_console: true,
-												},
+							env.esbuildMinify
+								? new EsbuildPlugin({
+										css: true,
+										drop: ['debugger', 'console'],
+										format: 'esm',
+										// Keep the class names otherwise @log won't provide a useful name
+										// keepNames: true,
+										legalComments: 'none',
+										minify: true,
+										target: 'es2022',
+										treeShaking: true,
+								  })
+								: new TerserPlugin({
+										extractComments: false,
+										parallel: true,
+										terserOptions: {
+											compress: {
+												drop_debugger: true,
+												drop_console: true,
 												ecma: 2020,
-												// // Keep the class names otherwise @log won't provide a useful name
-												// keep_classnames: true,
 												module: true,
 											},
-									  },
-							),
+											ecma: 2020,
+											format: {
+												comments: false,
+												ecma: 2020,
+											},
+											// // Keep the class names otherwise @log won't provide a useful name
+											// keep_classnames: true,
+											module: true,
+										},
+								  }),
 							new ImageMinimizerPlugin({
 								deleteOriginalAssets: true,
 								generator: [imageGeneratorConfig],
@@ -403,6 +455,14 @@ function getWebviewsConfig(mode, env) {
 							}),
 					  ]
 					: [],
+			splitChunks: {
+				// Disable all non-async code splitting
+				// chunks: () => false,
+				cacheGroups: {
+					default: false,
+					vendors: false,
+				},
+			},
 		},
 		module: {
 			rules: [
@@ -418,10 +478,10 @@ function getWebviewsConfig(mode, env) {
 						? {
 								loader: 'esbuild-loader',
 								options: {
+									format: 'esm',
 									implementation: esbuild,
-									loader: 'tsx',
-									target: 'es2020',
-									tsconfigRaw: resolveTSConfig(path.join(basePath, 'tsconfig.json')),
+									target: 'es2021',
+									tsconfig: path.join(basePath, 'tsconfig.json'),
 								},
 						  }
 						: {
@@ -460,20 +520,37 @@ function getWebviewsConfig(mode, env) {
 		resolve: {
 			alias: {
 				'@env': path.resolve(__dirname, 'src', 'env', 'browser'),
+				'@microsoft/fast-foundation': path.resolve(
+					__dirname,
+					'node_modules/@microsoft/fast-foundation/dist/esm/index.js',
+				),
+				'@microsoft/fast-react-wrapper': path.resolve(
+					__dirname,
+					'node_modules/@microsoft/fast-react-wrapper/dist/esm/index.js',
+				),
+				react: path.resolve(__dirname, 'node_modules', 'react'),
+				'react-dom': path.resolve(__dirname, 'node_modules', 'react-dom'),
+				tslib: path.resolve(__dirname, 'node_modules/tslib/tslib.es6.js'),
 			},
 			extensions: ['.ts', '.tsx', '.js', '.jsx', '.json'],
 			modules: [basePath, 'node_modules'],
 		},
 		plugins: plugins,
-		infrastructureLogging: {
-			level: 'log', // enables logging required for problem matchers
-		},
+		infrastructureLogging:
+			mode === 'production'
+				? undefined
+				: {
+						level: 'log', // enables logging required for problem matchers
+				  },
 		stats: {
 			preset: 'errors-warnings',
 			assets: true,
+			assetsSort: 'name',
+			assetsSpace: 100,
 			colors: true,
 			env: true,
 			errorsCount: true,
+			excludeAssets: [/\.(ttf|webp)/],
 			warningsCount: true,
 			timings: true,
 		},
@@ -635,24 +712,6 @@ class InlineChunkHtmlPlugin {
 			});
 		});
 	}
-}
-
-/**
- * @param { string } configFile
- * @returns { string }
- */
-function resolveTSConfig(configFile) {
-	const result = spawnSync('yarn', ['tsc', `-p ${configFile}`, '--showConfig'], {
-		cwd: __dirname,
-		encoding: 'utf8',
-		shell: true,
-	});
-
-	const data = result.stdout;
-	const start = data.indexOf('{');
-	const end = data.lastIndexOf('}') + 1;
-	const json = JSON5.parse(data.substring(start, end));
-	return json;
 }
 
 const schema = {

@@ -1,10 +1,10 @@
 import type { ChildProcess, SpawnOptions } from 'child_process';
 import { spawn } from 'child_process';
 import * as process from 'process';
-import type { CancellationToken } from 'vscode';
+import type { CancellationToken, OutputChannel } from 'vscode';
 import { Uri, window, workspace } from 'vscode';
 import { hrtime } from '@env/hrtime';
-import { GlyphChars } from '../../../constants';
+import { GlyphChars, LogLevel, slowCallWarningThreshold } from '../../../constants';
 import type { GitCommandOptions, GitSpawnOptions } from '../../../git/commandOptions';
 import { GitErrorHandling } from '../../../git/commandOptions';
 import type { GitDiffFilter } from '../../../git/models/diff';
@@ -25,6 +25,7 @@ import { fsExists, run, RunError } from './shell';
 
 const emptyArray = Object.freeze([]) as unknown as any[];
 const emptyObj = Object.freeze({});
+const emptyStr = '';
 
 const gitBranchDefaultConfigs = Object.freeze(['-c', 'color.branch=false']);
 const gitDiffDefaultConfigs = Object.freeze(['-c', 'color.diff=false']);
@@ -186,7 +187,7 @@ export class Git {
 			this.pendingCommands.delete(command);
 
 			const duration = getDurationMilliseconds(start);
-			const slow = duration > Logger.slowCallWarningThreshold;
+			const slow = duration > slowCallWarningThreshold;
 			const status =
 				slow || waiting
 					? ` (${slow ? `slow${waiting ? ', waiting' : ''}` : ''}${waiting ? 'waiting' : ''})`
@@ -205,7 +206,7 @@ export class Git {
 			} else {
 				Logger.log(`[GIT  ] ${gitCommand} ${GlyphChars.Dot} ${duration} ms${status}`);
 			}
-			Logger.logGitCommand(
+			this.logGitCommand(
 				`${gitCommand}${exception != null ? ` ${GlyphChars.Dot} FAILED` : ''}${waiting ? ' (waited)' : ''}`,
 				duration,
 				exception,
@@ -266,7 +267,7 @@ export class Git {
 		proc.once('error', e => (exception = e));
 		proc.once('exit', () => {
 			const duration = getDurationMilliseconds(start);
-			const slow = duration > Logger.slowCallWarningThreshold;
+			const slow = duration > slowCallWarningThreshold;
 			const status = slow ? ' (slow)' : '';
 
 			if (exception != null) {
@@ -282,7 +283,7 @@ export class Git {
 			} else {
 				Logger.log(`[SGIT ] ${gitCommand} ${GlyphChars.Dot} ${duration} ms${status}`);
 			}
-			Logger.logGitCommand(
+			this.logGitCommand(
 				`${gitCommand}${exception != null ? ` ${GlyphChars.Dot} FAILED` : ''}`,
 				duration,
 				exception,
@@ -502,9 +503,9 @@ export class Git {
 		return this.git<string>({ cwd: repoPath }, ...params);
 	}
 
-	async config__get(key: string, repoPath?: string, options: { local?: boolean } = {}) {
+	async config__get(key: string, repoPath?: string, options?: { local?: boolean }) {
 		const data = await this.git<string>(
-			{ cwd: repoPath ?? '', errors: GitErrorHandling.Ignore, local: options.local },
+			{ cwd: repoPath ?? '', errors: GitErrorHandling.Ignore, local: options?.local },
 			'config',
 			'--get',
 			key,
@@ -512,14 +513,24 @@ export class Git {
 		return data.length === 0 ? undefined : data.trim();
 	}
 
-	async config__get_regex(pattern: string, repoPath?: string, options: { local?: boolean } = {}) {
+	async config__get_regex(pattern: string, repoPath?: string, options?: { local?: boolean }) {
 		const data = await this.git<string>(
-			{ cwd: repoPath ?? '', errors: GitErrorHandling.Ignore, local: options.local },
+			{ cwd: repoPath ?? '', errors: GitErrorHandling.Ignore, local: options?.local },
 			'config',
 			'--get-regex',
 			pattern,
 		);
 		return data.length === 0 ? undefined : data.trim();
+	}
+
+	async config__set(key: string, value: string | undefined, repoPath?: string) {
+		const params = ['config', '--local'];
+		if (value == null) {
+			params.push('--unset', key);
+		} else {
+			params.push(key, value);
+		}
+		await this.git<string>({ cwd: repoPath ?? '', local: true }, ...params);
 	}
 
 	async diff(
@@ -1332,12 +1343,20 @@ export class Git {
 		return this.git<string>({ cwd: repoPath }, 'remote', '-v');
 	}
 
-	remote__add(repoPath: string, name: string, url: string) {
-		return this.git<string>({ cwd: repoPath }, 'remote', 'add', name, url);
+	remote__add(repoPath: string, name: string, url: string, options?: { fetch?: boolean }) {
+		const params = ['remote', 'add'];
+		if (options?.fetch) {
+			params.push('-f');
+		}
+		return this.git<string>({ cwd: repoPath }, ...params, name, url);
 	}
 
-	remote__prune(repoPath: string, remoteName: string) {
-		return this.git<string>({ cwd: repoPath }, 'remote', 'prune', remoteName);
+	remote__prune(repoPath: string, name: string) {
+		return this.git<string>({ cwd: repoPath }, 'remote', 'prune', name);
+	}
+
+	remote__remove(repoPath: string, name: string) {
+		return this.git<string>({ cwd: repoPath }, 'remote', 'remove', name);
 	}
 
 	remote__get_url(repoPath: string, remote: string): Promise<string> {
@@ -1346,6 +1365,32 @@ export class Git {
 
 	reset(repoPath: string | undefined, fileName: string) {
 		return this.git<string>({ cwd: repoPath }, 'reset', '-q', '--', fileName);
+	}
+
+	async rev_list(
+		repoPath: string,
+		ref: string,
+		options?: { all?: boolean; maxParents?: number },
+	): Promise<string[] | undefined> {
+		const params = ['rev-list'];
+		if (options?.all) {
+			params.push('--all');
+		}
+
+		if (options?.maxParents != null) {
+			params.push(`--max-parents=${options.maxParents}`);
+		}
+
+		const rawData = await this.git<string>(
+			{ cwd: repoPath, errors: GitErrorHandling.Ignore },
+			...params,
+			ref,
+			'--',
+		);
+		const data = rawData.trim().split('\n');
+		if (data.length === 0) return undefined;
+
+		return data;
 	}
 
 	async rev_list__count(repoPath: string, ref: string, all?: boolean): Promise<number | undefined> {
@@ -1851,6 +1896,33 @@ export class Git {
 
 			return undefined;
 		}
+	}
+
+	private _gitOutput: OutputChannel | undefined;
+
+	private logGitCommand(command: string, duration: number, ex?: Error): void {
+		if (Logger.enabled(LogLevel.Debug) && !Logger.isDebugging) return;
+
+		const slow = duration > slowCallWarningThreshold;
+
+		if (Logger.isDebugging) {
+			if (ex != null) {
+				console.error(Logger.timestamp, '[GitLens (Git)]', command ?? emptyStr, ex);
+			} else if (slow) {
+				console.warn(Logger.timestamp, '[GitLens (Git)]', command ?? emptyStr);
+			} else {
+				console.log(Logger.timestamp, '[GitLens (Git)]', command ?? emptyStr);
+			}
+		}
+
+		if (this._gitOutput == null) {
+			this._gitOutput = window.createOutputChannel('GitLens (Git)');
+		}
+		this._gitOutput.appendLine(
+			`${Logger.timestamp} [${slow ? '*' : ' '}${duration.toString().padStart(6)}ms] ${command}${
+				ex != null ? `\n\n${ex.toString()}` : emptyStr
+			}`,
+		);
 	}
 }
 

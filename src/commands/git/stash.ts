@@ -3,6 +3,7 @@ import { QuickInputButtons, window } from 'vscode';
 import { ContextKeys, GlyphChars } from '../../constants';
 import type { Container } from '../../container';
 import { getContext } from '../../context';
+import { reveal, showDetailsView } from '../../git/actions/stash';
 import { StashApplyError, StashApplyErrorReason } from '../../git/errors';
 import type { GitStashCommit } from '../../git/models/commit';
 import type { GitStashReference } from '../../git/models/reference';
@@ -11,28 +12,35 @@ import type { Repository } from '../../git/models/repository';
 import { Logger } from '../../logger';
 import { showGenericErrorMessage } from '../../messages';
 import type { QuickPickItemOfT } from '../../quickpicks/items/common';
-import { FlagsQuickPickItem } from '../../quickpicks/items/flags';
+import type { FlagsQuickPickItem } from '../../quickpicks/items/flags';
+import { createFlagsQuickPickItem } from '../../quickpicks/items/flags';
 import { formatPath } from '../../system/formatPath';
 import { pad } from '../../system/string';
 import type { ViewsWithRepositoryFolders } from '../../views/viewBase';
-import { GitActions } from '../gitCommands.actions';
 import { getSteps } from '../gitCommands.utils';
 import type {
 	AsyncStepResultGenerator,
 	PartialStepState,
 	QuickPickStep,
 	StepGenerator,
+	StepResult,
 	StepResultGenerator,
 	StepSelection,
 	StepState,
 } from '../quickCommand';
 import {
 	appendReposToTitle,
+	canInputStepContinue,
+	canPickStepContinue,
+	canStepContinue,
+	createInputStep,
+	createPickStep,
+	endSteps,
 	pickRepositoryStep,
 	pickStashStep,
 	QuickCommand,
 	QuickCommandButtons,
-	StepResult,
+	StepResultBreak,
 } from '../quickCommand';
 
 interface Context {
@@ -179,7 +187,7 @@ export class StashGitCommand extends QuickCommand<State> {
 
 				const result = yield* this.pickSubcommandStep(state);
 				// Always break on the first step (so we will go back)
-				if (result === StepResult.Break) break;
+				if (result === StepResultBreak) break;
 
 				state.subcommand = result;
 			}
@@ -197,7 +205,7 @@ export class StashGitCommand extends QuickCommand<State> {
 					state.repo = context.repos[0];
 				} else {
 					const result = yield* pickRepositoryStep(state, context);
-					if (result === StepResult.Break) continue;
+					if (result === StepResultBreak) continue;
 
 					state.repo = result;
 				}
@@ -218,7 +226,7 @@ export class StashGitCommand extends QuickCommand<State> {
 					yield* this.pushCommandSteps(state as PushStepState, context);
 					break;
 				default:
-					QuickCommand.endSteps(state);
+					endSteps(state);
 					break;
 			}
 
@@ -228,11 +236,11 @@ export class StashGitCommand extends QuickCommand<State> {
 			}
 		}
 
-		return state.counter < 0 ? StepResult.Break : undefined;
+		return state.counter < 0 ? StepResultBreak : undefined;
 	}
 
 	private *pickSubcommandStep(state: PartialStepState<State>): StepResultGenerator<State['subcommand']> {
-		const step = QuickCommand.createPickStep<QuickPickItemOfT<State['subcommand']>>({
+		const step = createPickStep<QuickPickItemOfT<State['subcommand']>>({
 			title: this.title,
 			placeholder: `Choose a ${this.label} command`,
 			items: [
@@ -272,7 +280,7 @@ export class StashGitCommand extends QuickCommand<State> {
 			buttons: [QuickInputButtons.Back],
 		});
 		const selection: StepSelection<typeof step> = yield step;
-		return QuickCommand.canPickStepContinue(step, state, selection) ? selection[0].item : StepResult.Break;
+		return canPickStepContinue(step, state, selection) ? selection[0].item : StepResultBreak;
 	}
 
 	private async *applyOrPopCommandSteps(state: ApplyStepState | PopStepState, context: Context): StepGenerator {
@@ -287,19 +295,19 @@ export class StashGitCommand extends QuickCommand<State> {
 					picked: state.reference?.ref,
 				});
 				// Always break on the first step (so we will go back)
-				if (result === StepResult.Break) break;
+				if (result === StepResultBreak) break;
 
 				state.reference = result;
 			}
 
 			if (this.confirm(state.confirm)) {
 				const result = yield* this.applyOrPopCommandConfirmStep(state, context);
-				if (result === StepResult.Break) continue;
+				if (result === StepResultBreak) continue;
 
 				state.subcommand = result;
 			}
 
-			QuickCommand.endSteps(state);
+			endSteps(state);
 
 			try {
 				await state.repo.stashApply(
@@ -367,12 +375,12 @@ export class StashGitCommand extends QuickCommand<State> {
 				additionalButtons: [QuickCommandButtons.ShowDetailsView, QuickCommandButtons.RevealInSideBar],
 				onDidClickButton: (quickpick, button) => {
 					if (button === QuickCommandButtons.ShowDetailsView) {
-						void GitActions.Stash.showDetailsView(state.reference, {
+						void showDetailsView(state.reference, {
 							pin: false,
 							preserveFocus: true,
 						});
 					} else if (button === QuickCommandButtons.RevealInSideBar) {
-						void GitActions.Stash.reveal(state.reference, {
+						void reveal(state.reference, {
 							select: true,
 							expand: true,
 						});
@@ -381,7 +389,7 @@ export class StashGitCommand extends QuickCommand<State> {
 			},
 		);
 		const selection: StepSelection<typeof step> = yield step;
-		return QuickCommand.canPickStepContinue(step, state, selection) ? selection[0].item : StepResult.Break;
+		return canPickStepContinue(step, state, selection) ? selection[0].item : StepResultBreak;
 	}
 
 	private async *dropCommandSteps(state: DropStepState, context: Context): StepGenerator {
@@ -394,15 +402,15 @@ export class StashGitCommand extends QuickCommand<State> {
 					picked: state.reference?.ref,
 				});
 				// Always break on the first step (so we will go back)
-				if (result === StepResult.Break) break;
+				if (result === StepResultBreak) break;
 
 				state.reference = result;
 			}
 
 			const result = yield* this.dropCommandConfirmStep(state, context);
-			if (result === StepResult.Break) continue;
+			if (result === StepResultBreak) continue;
 
-			QuickCommand.endSteps(state);
+			endSteps(state);
 			try {
 				// drop can only take a stash index, e.g. `stash@{1}`
 				await state.repo.stashDelete(`stash@{${state.reference.number}}`, state.reference.ref);
@@ -431,12 +439,12 @@ export class StashGitCommand extends QuickCommand<State> {
 				additionalButtons: [QuickCommandButtons.ShowDetailsView, QuickCommandButtons.RevealInSideBar],
 				onDidClickButton: (quickpick, button) => {
 					if (button === QuickCommandButtons.ShowDetailsView) {
-						void GitActions.Stash.showDetailsView(state.reference, {
+						void showDetailsView(state.reference, {
 							pin: false,
 							preserveFocus: true,
 						});
 					} else if (button === QuickCommandButtons.RevealInSideBar) {
-						void GitActions.Stash.reveal(state.reference, {
+						void reveal(state.reference, {
 							select: true,
 							expand: true,
 						});
@@ -445,7 +453,7 @@ export class StashGitCommand extends QuickCommand<State> {
 			},
 		);
 		const selection: StepSelection<typeof step> = yield step;
-		return QuickCommand.canPickStepContinue(step, state, selection) ? undefined : StepResult.Break;
+		return canPickStepContinue(step, state, selection) ? undefined : StepResultBreak;
 	}
 
 	private async *listCommandSteps(state: ListStepState, context: Context): StepGenerator {
@@ -460,7 +468,7 @@ export class StashGitCommand extends QuickCommand<State> {
 					picked: state.reference?.ref,
 				});
 				// Always break on the first step (so we will go back)
-				if (result === StepResult.Break) break;
+				if (result === StepResultBreak) break;
 
 				state.reference = result;
 			}
@@ -477,8 +485,8 @@ export class StashGitCommand extends QuickCommand<State> {
 				this.pickedVia,
 			);
 			state.counter--;
-			if (result === StepResult.Break) {
-				QuickCommand.endSteps(state);
+			if (result === StepResultBreak) {
+				endSteps(state);
 			}
 		}
 	}
@@ -497,19 +505,19 @@ export class StashGitCommand extends QuickCommand<State> {
 
 				const result = yield* this.pushCommandInputMessageStep(state, context);
 				// Always break on the first step (so we will go back)
-				if (result === StepResult.Break) break;
+				if (result === StepResultBreak) break;
 
 				state.message = result;
 			}
 
 			if (this.confirm(state.confirm)) {
 				const result = yield* this.pushCommandConfirmStep(state, context);
-				if (result === StepResult.Break) continue;
+				if (result === StepResultBreak) continue;
 
 				state.flags = result;
 			}
 
-			QuickCommand.endSteps(state);
+			endSteps(state);
 			try {
 				await state.repo.stashSave(state.message, state.uris, {
 					includeUntracked: state.flags.includes('--include-untracked'),
@@ -536,7 +544,7 @@ export class StashGitCommand extends QuickCommand<State> {
 		state: PushStepState,
 		context: Context,
 	): AsyncStepResultGenerator<string> {
-		const step = QuickCommand.createInputStep({
+		const step = createInputStep({
 			title: appendReposToTitle(
 				context.title,
 				state,
@@ -555,11 +563,8 @@ export class StashGitCommand extends QuickCommand<State> {
 		});
 
 		const value: StepSelection<typeof step> = yield step;
-		if (
-			!QuickCommand.canStepContinue(step, state, value) ||
-			!(await QuickCommand.canInputStepContinue(step, state, value))
-		) {
-			return StepResult.Break;
+		if (!canStepContinue(step, state, value) || !(await canInputStepContinue(step, state, value))) {
+			return StepResultBreak;
 		}
 
 		return value;
@@ -570,23 +575,23 @@ export class StashGitCommand extends QuickCommand<State> {
 			appendReposToTitle(`Confirm ${context.title}`, state, context),
 			state.uris == null || state.uris.length === 0
 				? [
-						FlagsQuickPickItem.create<PushFlags>(state.flags, [], {
+						createFlagsQuickPickItem<PushFlags>(state.flags, [], {
 							label: context.title,
 							detail: 'Will stash uncommitted changes',
 						}),
-						FlagsQuickPickItem.create<PushFlags>(state.flags, ['--include-untracked'], {
+						createFlagsQuickPickItem<PushFlags>(state.flags, ['--include-untracked'], {
 							label: `${context.title} & Include Untracked`,
 							description: '--include-untracked',
 							detail: 'Will stash uncommitted changes, including untracked files',
 						}),
-						FlagsQuickPickItem.create<PushFlags>(state.flags, ['--keep-index'], {
+						createFlagsQuickPickItem<PushFlags>(state.flags, ['--keep-index'], {
 							label: `${context.title} & Keep Staged`,
 							description: '--keep-index',
 							detail: 'Will stash uncommitted changes, but will keep staged files intact',
 						}),
 				  ]
 				: [
-						FlagsQuickPickItem.create<PushFlags>(state.flags, [], {
+						createFlagsQuickPickItem<PushFlags>(state.flags, [], {
 							label: context.title,
 							detail: `Will stash changes from ${
 								state.uris.length === 1
@@ -594,7 +599,7 @@ export class StashGitCommand extends QuickCommand<State> {
 									: `${state.uris.length} files`
 							}`,
 						}),
-						FlagsQuickPickItem.create<PushFlags>(state.flags, ['--keep-index'], {
+						createFlagsQuickPickItem<PushFlags>(state.flags, ['--keep-index'], {
 							label: `${context.title} & Keep Staged`,
 							detail: `Will stash changes from ${
 								state.uris.length === 1
@@ -607,6 +612,6 @@ export class StashGitCommand extends QuickCommand<State> {
 			{ placeholder: `Confirm ${context.title}` },
 		);
 		const selection: StepSelection<typeof step> = yield step;
-		return QuickCommand.canPickStepContinue(step, state, selection) ? selection[0].item : StepResult.Break;
+		return canPickStepContinue(step, state, selection) ? selection[0].item : StepResultBreak;
 	}
 }

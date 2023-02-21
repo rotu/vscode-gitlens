@@ -28,8 +28,9 @@ import type {
 import { configuration, viewsCommonConfigKeys, viewsConfigKeys } from '../configuration';
 import type { Container } from '../container';
 import { Logger } from '../logger';
+import { getLogScope } from '../logScope';
 import { executeCommand } from '../system/command';
-import { debug, getLogScope, log } from '../system/decorators/log';
+import { debug, log } from '../system/decorators/log';
 import { once } from '../system/event';
 import { debounce } from '../system/function';
 import { cancellable, isPromise } from '../system/promise';
@@ -39,8 +40,8 @@ import type { CommitsView } from './commitsView';
 import type { ContributorsView } from './contributorsView';
 import type { FileHistoryView } from './fileHistoryView';
 import type { LineHistoryView } from './lineHistoryView';
-import type { ViewNode } from './nodes/viewNode';
-import { PageableViewNode } from './nodes/viewNode';
+import type { PageableViewNode, ViewNode } from './nodes/viewNode';
+import { isPageableViewNode } from './nodes/viewNode';
 import type { RemotesView } from './remotesView';
 import type { RepositoriesView } from './repositoriesView';
 import type { SearchAndCompareView } from './searchAndCompareView';
@@ -449,11 +450,11 @@ export abstract class ViewBase<
 			children = await node.getChildren();
 			if (children.length === 0) continue;
 
-			while (node != null && !PageableViewNode.is(node)) {
+			while (node != null && !isPageableViewNode(node)) {
 				node = await node.getSplattedChild?.();
 			}
 
-			if (node != null && PageableViewNode.is(node)) {
+			if (node != null && isPageableViewNode(node)) {
 				let child = children.find(predicate);
 				if (child != null) return child;
 

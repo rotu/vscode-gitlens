@@ -1,16 +1,18 @@
 import type { Disposable, QuickPick } from 'vscode';
 import { CancellationTokenSource, window } from 'vscode';
-import { GitActions } from '../commands/gitCommands.actions';
 import { getBranchesAndOrTags, getValidateGitReferenceFn, QuickCommandButtons } from '../commands/quickCommand';
 import { GlyphChars } from '../constants';
 import { Container } from '../container';
+import { reveal as revealBranch } from '../git/actions/branch';
+import { showDetailsView } from '../git/actions/commit';
+import { reveal as revealTag } from '../git/actions/tag';
 import type { BranchSortOptions, GitBranch } from '../git/models/branch';
 import { GitReference } from '../git/models/reference';
 import type { GitTag, TagSortOptions } from '../git/models/tag';
 import type { KeyboardScope, Keys } from '../keyboard';
 import { getQuickPickIgnoreFocusOut } from '../system/utils';
-import type { BranchQuickPickItem, TagQuickPickItem } from './items/gitCommands';
-import { RefQuickPickItem } from './items/gitCommands';
+import type { BranchQuickPickItem, RefQuickPickItem, TagQuickPickItem } from './items/gitCommands';
+import { createRefQuickPickItem } from './items/gitCommands';
 
 export type ReferencesQuickPickItem = BranchQuickPickItem | TagQuickPickItem | RefQuickPickItem;
 
@@ -133,11 +135,11 @@ export namespace ReferencePicker {
 					quickpick.onDidTriggerItemButton(({ button, item: { item } }) => {
 						if (button === QuickCommandButtons.RevealInSideBar) {
 							if (GitReference.isBranch(item)) {
-								void GitActions.Branch.reveal(item, { select: true, expand: true });
+								void revealBranch(item, { select: true, expand: true });
 							} else if (GitReference.isTag(item)) {
-								void GitActions.Tag.reveal(item, { select: true, expand: true });
+								void revealTag(item, { select: true, expand: true });
 							} else if (GitReference.isRevision(item)) {
-								void GitActions.Commit.showDetailsView(item, {
+								void showDetailsView(item, {
 									pin: false,
 									preserveFocus: true,
 								});
@@ -190,11 +192,11 @@ export namespace ReferencePicker {
 		}
 
 		if (include & ReferencesQuickPickIncludes.HEAD) {
-			items.splice(0, 0, RefQuickPickItem.create('HEAD', repoPath, undefined, { icon: true }));
+			items.splice(0, 0, createRefQuickPickItem('HEAD', repoPath, undefined, { icon: true }));
 		}
 
 		if (include & ReferencesQuickPickIncludes.WorkingTree) {
-			items.splice(0, 0, RefQuickPickItem.create('', repoPath, undefined, { icon: true }));
+			items.splice(0, 0, createRefQuickPickItem('', repoPath, undefined, { icon: true }));
 		}
 
 		return items;

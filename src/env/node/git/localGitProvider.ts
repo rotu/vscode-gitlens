@@ -2,8 +2,10 @@ import { readdir, realpath } from 'fs';
 import { homedir, hostname, userInfo } from 'os';
 import { resolve as resolvePath } from 'path';
 import { env as process_env } from 'process';
+import { encodingExists } from 'iconv-lite';
 import type { CancellationToken, Event, TextDocument, WorkspaceFolder } from 'vscode';
 import { Disposable, env, EventEmitter, extensions, FileType, Range, Uri, window, workspace } from 'vscode';
+import { md5 } from '@env/crypto';
 import { fetch, getProxyAgent } from '@env/fetch';
 import { hrtime } from '@env/hrtime';
 import { isLinux, isWindows } from '@env/platform';
@@ -29,6 +31,7 @@ import {
 	WorktreeDeleteErrorReason,
 } from '../../../git/errors';
 import type {
+	GitCaches,
 	GitDir,
 	GitProvider,
 	GitProviderDescriptor,
@@ -43,7 +46,6 @@ import type {
 	ScmRepository,
 } from '../../../git/gitProvider';
 import { GitProviderId, RepositoryVisibility } from '../../../git/gitProvider';
-import { GitProviderService } from '../../../git/gitProviderService';
 import { encodeGitLensRevisionUriAuthority, GitUri } from '../../../git/gitUri';
 import type { GitBlame, GitBlameAuthor, GitBlameLine, GitBlameLines } from '../../../git/models/blame';
 import type { BranchSortOptions } from '../../../git/models/branch';
@@ -114,8 +116,9 @@ import { getRemoteProviderMatcher, loadRemoteProviders } from '../../../git/remo
 import type { RichRemoteProvider } from '../../../git/remotes/richRemoteProvider';
 import type { GitSearch, GitSearchResultData, GitSearchResults, SearchQuery } from '../../../git/search';
 import { getGitArgsFromSearchQuery, getSearchQueryComparisonKey } from '../../../git/search';
-import type { LogScope } from '../../../logger';
 import { Logger } from '../../../logger';
+import type { LogScope } from '../../../logScope';
+import { getLogScope } from '../../../logScope';
 import {
 	showGenericErrorMessage,
 	showGitDisabledErrorMessage,
@@ -133,7 +136,7 @@ import type {
 import { countStringLength, filterMap } from '../../../system/array';
 import { TimedCancellationSource } from '../../../system/cancellation';
 import { gate } from '../../../system/decorators/gate';
-import { debug, getLogScope, log } from '../../../system/decorators/log';
+import { debug, log } from '../../../system/decorators/log';
 import { filterMap as filterMapIterable, find, first, join, last, map, some } from '../../../system/iterable';
 import {
 	commonBaseIndex,
@@ -149,7 +152,7 @@ import {
 } from '../../../system/path';
 import type { PromiseOrValue } from '../../../system/promise';
 import { any, fastestSettled, getSettledValue } from '../../../system/promise';
-import { equalsIgnoreCase, getDurationMilliseconds, interpolate, md5, splitSingle } from '../../../system/string';
+import { equalsIgnoreCase, getDurationMilliseconds, interpolate, splitSingle } from '../../../system/string';
 import { PathTrie } from '../../../system/trie';
 import { compare, fromString } from '../../../system/version';
 import { serializeWebviewItemContext } from '../../../system/webview';
@@ -227,6 +230,14 @@ export class LocalGitProvider implements GitProvider, Disposable {
 
 	constructor(protected readonly container: Container, protected readonly git: Git) {
 		this.git.setLocator(this.ensureGit.bind(this));
+
+		this._disposables.push(
+			this.container.events.on('git:cache:reset', e =>
+				e.data.repoPath
+					? this.resetCache(e.data.repoPath, ...(e.data.caches ?? emptyArray))
+					: this.resetCaches(...(e.data.caches ?? emptyArray)),
+			),
+		);
 	}
 
 	dispose() {
@@ -838,13 +849,21 @@ export class LocalGitProvider implements GitProvider, Disposable {
 	}
 
 	@log()
-	async addRemote(repoPath: string, name: string, url: string): Promise<void> {
-		await this.git.remote__add(repoPath, name, url);
+	async addRemote(repoPath: string, name: string, url: string, options?: { fetch?: boolean }): Promise<void> {
+		await this.git.remote__add(repoPath, name, url, options);
+		this.container.events.fire('git:cache:reset', { repoPath: repoPath, caches: ['remotes'] });
 	}
 
 	@log()
-	async pruneRemote(repoPath: string, remoteName: string): Promise<void> {
-		await this.git.remote__prune(repoPath, remoteName);
+	async pruneRemote(repoPath: string, name: string): Promise<void> {
+		await this.git.remote__prune(repoPath, name);
+		this.container.events.fire('git:cache:reset', { repoPath: repoPath, caches: ['remotes'] });
+	}
+
+	@log()
+	async removeRemote(repoPath: string, name: string): Promise<void> {
+		await this.git.remote__remove(repoPath, name);
+		this.container.events.fire('git:cache:reset', { repoPath: repoPath, caches: ['remotes'] });
 	}
 
 	@log()
@@ -903,6 +922,7 @@ export class LocalGitProvider implements GitProvider, Disposable {
 
 		try {
 			await this.git.checkout(repoPath, ref, options);
+			this.container.events.fire('git:cache:reset', { repoPath: repoPath, caches: ['branches', 'status'] });
 		} catch (ex) {
 			const msg: string = ex?.toString() ?? '';
 			if (/overwritten by checkout/i.test(msg)) {
@@ -918,29 +938,61 @@ export class LocalGitProvider implements GitProvider, Disposable {
 	}
 
 	@log({ singleLine: true })
-	resetCaches(...affects: ('branches' | 'contributors' | 'providers' | 'remotes' | 'stashes' | 'status' | 'tags')[]) {
-		if (affects.length === 0 || affects.includes('branches')) {
+	private resetCache(
+		repoPath: string,
+		...caches: ('branches' | 'contributors' | 'providers' | 'remotes' | 'stashes' | 'status' | 'tags')[]
+	) {
+		if (caches.length === 0 || caches.includes('branches')) {
+			this._branchesCache.delete(repoPath);
+		}
+
+		if (caches.length === 0 || caches.includes('contributors')) {
+			this._contributorsCache.delete(repoPath);
+		}
+
+		if (caches.length === 0 || caches.includes('stashes')) {
+			this._stashesCache.delete(repoPath);
+		}
+
+		if (caches.length === 0 || caches.includes('status')) {
+			this._mergeStatusCache.delete(repoPath);
+			this._rebaseStatusCache.delete(repoPath);
+		}
+
+		if (caches.length === 0 || caches.includes('tags')) {
+			this._tagsCache.delete(repoPath);
+		}
+
+		if (caches.length === 0) {
+			this._trackedPaths.delete(repoPath);
+			this._repoInfoCache.delete(repoPath);
+		}
+	}
+
+	@log({ singleLine: true })
+	private resetCaches(...caches: GitCaches[]) {
+		if (caches.length === 0 || caches.includes('branches')) {
 			this._branchesCache.clear();
 		}
 
-		if (affects.length === 0 || affects.includes('contributors')) {
+		if (caches.length === 0 || caches.includes('contributors')) {
 			this._contributorsCache.clear();
 		}
 
-		if (affects.length === 0 || affects.includes('stashes')) {
+		if (caches.length === 0 || caches.includes('stashes')) {
 			this._stashesCache.clear();
 		}
 
-		if (affects.length === 0 || affects.includes('status')) {
+		if (caches.length === 0 || caches.includes('status')) {
 			this._mergeStatusCache.clear();
 			this._rebaseStatusCache.clear();
 		}
 
-		if (affects.length === 0 || affects.includes('tags')) {
+		if (caches.length === 0 || caches.includes('tags')) {
 			this._tagsCache.clear();
 		}
 
-		if (affects.length === 0) {
+		if (caches.length === 0) {
 			this._trackedPaths.clear();
 			this._repoInfoCache.clear();
 		}
@@ -975,15 +1027,16 @@ export class LocalGitProvider implements GitProvider, Disposable {
 			const branch = await repo?.getBranch(branchRef?.name);
 			if (!branch?.remote && branch?.upstream == null) return undefined;
 
-			return this.git.fetch(repoPath, {
+			await this.git.fetch(repoPath, {
 				branch: branch.getNameWithoutRemote(),
 				remote: branch.getRemoteName()!,
 				upstream: branch.getTrackingWithoutRemote()!,
 				pull: options?.pull,
 			});
+		} else {
+			await this.git.fetch(repoPath, opts);
 		}
-
-		return this.git.fetch(repoPath, opts);
+		this.container.events.fire('git:cache:reset', { repoPath: repoPath });
 	}
 
 	private readonly toCanonicalMap = new Map<string, Uri>();
@@ -1656,6 +1709,8 @@ export class LocalGitProvider implements GitProvider, Disposable {
 
 		const branches = getSettledValue(branchesResult)?.values;
 		const branchMap = branches != null ? new Map(branches.map(r => [r.name, r])) : new Map<string, GitBranch>();
+		const headBranch = branches?.find(b => b.current);
+		const headRefUpstreamName = headBranch?.upstream?.name;
 
 		const currentUser = getSettledValue(currentUserResult);
 
@@ -1887,6 +1942,7 @@ export class LocalGitProvider implements GitProvider, Disposable {
 									url: remote.url,
 									avatarUrl: avatarUrl,
 									context: serializeWebviewItemContext<GraphItemRefContext>(context),
+									current: tip === headRefUpstreamName,
 								};
 								refRemoteHeads.push(refRemoteHead);
 
@@ -1927,6 +1983,7 @@ export class LocalGitProvider implements GitProvider, Disposable {
 							name: tip,
 							isCurrentHead: head,
 							context: serializeWebviewItemContext<GraphItemRefContext>(context),
+							upstream: branch?.upstream?.name,
 						};
 						refHeads.push(refHead);
 
@@ -2082,21 +2139,12 @@ export class LocalGitProvider implements GitProvider, Disposable {
 		return getCommitsForGraphCore.call(this, defaultLimit, selectSha);
 	}
 
-	@log()
-	async getOldestUnpushedRefForFile(repoPath: string, uri: Uri): Promise<string | undefined> {
-		const [relativePath, root] = splitPath(uri, repoPath);
+	getConfig(repoPath: string, key: string): Promise<string | undefined> {
+		return this.git.config__get(key, repoPath);
+	}
 
-		const data = await this.git.log__file(root, relativePath, '@{push}..', {
-			argsOrFormat: ['-z', '--format=%H'],
-			fileMode: 'none',
-			ordering: configuration.get('advanced.commitOrdering'),
-			renames: true,
-		});
-		if (!data) return undefined;
-
-		// -2 to skip the ending null
-		const index = data.lastIndexOf('\0', data.length - 2);
-		return index === -1 ? undefined : data.slice(index + 1, data.length - 2);
+	setConfig(repoPath: string, key: string, value: string | undefined): Promise<void> {
+		return this.git.config__set(key, value, repoPath);
 	}
 
 	@log()
@@ -2294,7 +2342,7 @@ export class LocalGitProvider implements GitProvider, Disposable {
 			uri.fsPath,
 			ref1,
 			ref2,
-			{ encoding: GitProviderService.getEncoding(uri) },
+			{ encoding: getEncoding(uri) },
 			doc,
 			key,
 			scope,
@@ -2382,7 +2430,7 @@ export class LocalGitProvider implements GitProvider, Disposable {
 			uri.fsPath,
 			ref,
 			contents,
-			{ encoding: GitProviderService.getEncoding(uri) },
+			{ encoding: getEncoding(uri) },
 			doc,
 			key,
 			scope,
@@ -3360,6 +3408,23 @@ export class LocalGitProvider implements GitProvider, Disposable {
 	}
 
 	@log()
+	async getOldestUnpushedRefForFile(repoPath: string, uri: Uri): Promise<string | undefined> {
+		const [relativePath, root] = splitPath(uri, repoPath);
+
+		const data = await this.git.log__file(root, relativePath, '@{push}..', {
+			argsOrFormat: ['-z', '--format=%H'],
+			fileMode: 'none',
+			ordering: configuration.get('advanced.commitOrdering'),
+			renames: true,
+		});
+		if (!data) return undefined;
+
+		// -2 to skip the ending null
+		const index = data.lastIndexOf('\0', data.length - 2);
+		return index === -1 ? undefined : data.slice(index + 1, data.length - 2);
+	}
+
+	@log()
 	async getPreviousComparisonUris(
 		repoPath: string,
 		uri: Uri,
@@ -3924,6 +3989,12 @@ export class LocalGitProvider implements GitProvider, Disposable {
 		return GitTreeParser.parse(data) ?? [];
 	}
 
+	@log()
+	async getUniqueRepositoryId(repoPath: string): Promise<string | undefined> {
+		const data = await this.git.rev_list(repoPath, 'HEAD', { maxParents: 0 });
+		return data?.[0];
+	}
+
 	@log({ args: { 1: false } })
 	async hasBranchOrTag(
 		repoPath: string | undefined,
@@ -4039,7 +4110,9 @@ export class LocalGitProvider implements GitProvider, Disposable {
 						// If we didn't find it, check it as close to the file as possible (will find nested repos)
 						tracked = Boolean(await this.git.ls_files(newRepoPath, newRelativePath));
 						if (tracked) {
-							repository = await this.container.git.getOrOpenRepository(Uri.file(path), true);
+							repository = await this.container.git.getOrOpenRepository(Uri.file(path), {
+								detectNested: true,
+							});
 							if (repository != null) {
 								return splitPath(path, repository.path);
 							}
@@ -4064,7 +4137,9 @@ export class LocalGitProvider implements GitProvider, Disposable {
 						const index = relativePath.indexOf('/');
 						if (index < 0 || index === relativePath.length - 1) return undefined;
 
-						const nested = await this.container.git.getOrOpenRepository(Uri.file(path), true);
+						const nested = await this.container.git.getOrOpenRepository(Uri.file(path), {
+							detectNested: true,
+						});
 						if (nested != null && nested !== repository) {
 							[relativePath, repoPath] = splitPath(path, repository.path);
 							repository = undefined;
@@ -4544,6 +4619,7 @@ export class LocalGitProvider implements GitProvider, Disposable {
 	@log()
 	async stashDelete(repoPath: string, stashName: string, ref?: string): Promise<void> {
 		await this.git.stash__delete(repoPath, stashName, ref);
+		this.container.events.fire('git:cache:reset', { repoPath: repoPath, caches: ['stashes'] });
 	}
 
 	@log<LocalGitProvider['stashSave']>({ args: { 2: uris => uris?.length } })
@@ -4553,7 +4629,11 @@ export class LocalGitProvider implements GitProvider, Disposable {
 		uris?: Uri[],
 		options?: { includeUntracked?: boolean; keepIndex?: boolean },
 	): Promise<void> {
-		if (uris == null) return this.git.stash__push(repoPath, message, options);
+		if (uris == null) {
+			await this.git.stash__push(repoPath, message, options);
+			this.container.events.fire('git:cache:reset', { repoPath: repoPath, caches: ['stashes', 'status'] });
+			return;
+		}
 
 		await this.ensureGitVersion(
 			'2.13.2',
@@ -4574,11 +4654,12 @@ export class LocalGitProvider implements GitProvider, Disposable {
 			);
 		}
 
-		return this.git.stash__push(repoPath, message, {
+		await this.git.stash__push(repoPath, message, {
 			...options,
 			pathspecs: pathspecs,
 			stdin: stdin,
 		});
+		this.container.events.fire('git:cache:reset', { repoPath: repoPath, caches: ['stashes'] });
 	}
 
 	@log()
@@ -4589,6 +4670,9 @@ export class LocalGitProvider implements GitProvider, Disposable {
 	) {
 		try {
 			await this.git.worktree__add(repoPath, path, options);
+			if (options?.createBranch) {
+				this.container.events.fire('git:cache:reset', { repoPath: repoPath, caches: ['branches'] });
+			}
 		} catch (ex) {
 			Logger.error(ex);
 
@@ -4759,4 +4843,9 @@ export class LocalGitProvider implements GitProvider, Disposable {
 			`${prefix} requires a newer version of Git (>= ${version}) than is currently installed (${await this.git.version()}).${suffix}`,
 		);
 	}
+}
+
+function getEncoding(uri: Uri): string {
+	const encoding = configuration.getAny<string>('files.encoding', uri);
+	return encoding != null && encodingExists(encoding) ? encoding : 'utf8';
 }

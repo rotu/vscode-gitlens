@@ -1,5 +1,4 @@
-const cssColorRegex =
-	/^(?:(#?)([0-9a-f]{3}|[0-9a-f]{6})|((?:rgb|hsl)a?)\((-?\d+%?)[,\s]+(-?\d+%?)[,\s]+(-?\d+%?)[,\s]*(-?[\d.]+%?)?\))$/i;
+import { CharCode } from '../constants';
 
 function adjustLight(color: number, amount: number) {
 	const cc = color + amount;
@@ -8,10 +7,12 @@ function adjustLight(color: number, amount: number) {
 	return Math.round(c);
 }
 
+// TODO@d13 leaving as is for now, updating to the color library breaks our existing darkened colors
 export function darken(color: string, percentage: number) {
 	return lighten(color, -percentage);
 }
 
+// TODO@d13 leaving as is for now, updating to the color library breaks our existing lightened colors
 export function lighten(color: string, percentage: number) {
 	const rgba = toRgba(color);
 	if (rgba == null) return color;
@@ -22,146 +23,40 @@ export function lighten(color: string, percentage: number) {
 }
 
 export function opacity(color: string, percentage: number) {
-	const rgba = toRgba(color);
+	const rgba = Color.from(color);
 	if (rgba == null) return color;
 
-	const [r, g, b, a] = rgba;
-	return `rgba(${r}, ${g}, ${b}, ${a * (percentage / 100)})`;
+	return rgba.transparent(percentage / 100).toString();
 }
 
 export function mix(color1: string, color2: string, percentage: number) {
-	const rgba1 = toRgba(color1);
-	const rgba2 = toRgba(color2);
+	const rgba1 = Color.from(color1);
+	const rgba2 = Color.from(color2);
 	if (rgba1 == null || rgba2 == null) return color1;
-	const [r1, g1, b1, a1] = rgba1;
-	const [r2, g2, b2, a2] = rgba2;
-	return `rgba(${mixChannel(r1, r2, percentage)}, ${mixChannel(g1, g2, percentage)}, ${mixChannel(
-		b1,
-		b2,
-		percentage,
-	)}, ${mixChannel(a1, a2, percentage)})`;
+	return rgba1.mix(rgba2, percentage / 100).toString();
 }
-
-const mixChannel = (channel1: number, channel2: number, percentage: number) => {
-	return channel1 + ((channel2 - channel1) * percentage) / 100;
-};
 
 export function scale(value1: string, value2: string, steps: number): string[] {
 	const colors = [];
 	const color1 = Color.from(value1);
 	const color2 = Color.from(value2);
 
-	colors.push(color1);
+	colors.push(color1.toString());
 	const range = steps - 1;
 	for (let i = 1; i < range; i++) {
 		const newColor = color1.mix(color2, i / range);
-		colors.push(newColor);
+		colors.push(newColor.toString());
 	}
-	colors.push(color2);
+	colors.push(color2.toString());
 
-	return colors.map(color => color.toString());
+	return colors;
 }
 
 export function toRgba(color: string) {
-	color = color.trim();
-
-	const result = cssColorRegex.exec(color);
+	const result = parseColor(color);
 	if (result == null) return null;
 
-	if (result[1] === '#') {
-		const hex = result[2];
-		switch (hex.length) {
-			case 3:
-				return [parseInt(hex[0] + hex[0], 16), parseInt(hex[1] + hex[1], 16), parseInt(hex[2] + hex[2], 16), 1];
-			case 6:
-				return [
-					parseInt(hex.substring(0, 2), 16),
-					parseInt(hex.substring(2, 4), 16),
-					parseInt(hex.substring(4, 6), 16),
-					1,
-				];
-		}
-
-		return null;
-	}
-
-	switch (result[3]) {
-		case 'rgb':
-			return [parseInt(result[4], 10), parseInt(result[5], 10), parseInt(result[6], 10), 1];
-		case 'rgba':
-			return [parseInt(result[4], 10), parseInt(result[5], 10), parseInt(result[6], 10), parseFloat(result[7])];
-		default:
-			return null;
-	}
-}
-
-const enum CharCode {
-	/**
-	 * The `#` character.
-	 */
-	Hash = 35,
-	Digit0 = 48,
-	Digit1 = 49,
-	Digit2 = 50,
-	Digit3 = 51,
-	Digit4 = 52,
-	Digit5 = 53,
-	Digit6 = 54,
-	Digit7 = 55,
-	Digit8 = 56,
-	Digit9 = 57,
-	A = 65,
-	B = 66,
-	C = 67,
-	D = 68,
-	E = 69,
-	F = 70,
-	G = 71,
-	H = 72,
-	I = 73,
-	J = 74,
-	K = 75,
-	L = 76,
-	M = 77,
-	N = 78,
-	O = 79,
-	P = 80,
-	Q = 81,
-	R = 82,
-	S = 83,
-	T = 84,
-	U = 85,
-	V = 86,
-	W = 87,
-	X = 88,
-	Y = 89,
-	Z = 90,
-	a = 97,
-	b = 98,
-	c = 99,
-	d = 100,
-	e = 101,
-	f = 102,
-	g = 103,
-	h = 104,
-	i = 105,
-	j = 106,
-	k = 107,
-	l = 108,
-	m = 109,
-	n = 110,
-	o = 111,
-	p = 112,
-	q = 113,
-	r = 114,
-	s = 115,
-	t = 116,
-	u = 117,
-	v = 118,
-	w = 119,
-	x = 120,
-	y = 121,
-	z = 122,
+	return [result.rgba.r, result.rgba.g, result.rgba.b, result.rgba.a];
 }
 
 function mixColors(col1: Color, col2: Color, factor: number): Color {
@@ -464,14 +359,18 @@ export class HSVA {
 }
 
 export class Color {
-	static fromHex(hex: string): Color {
-		return Color.Format.CSS.parseHex(hex) || Color.red;
-	}
-
 	static from(value: string | Color): Color {
 		if (value instanceof Color) return value;
 
-		return Color.Format.CSS.parseString(value) || Color.red;
+		return parseColor(value) || Color.red;
+	}
+
+	static fromCssVariable(variable: string, css: { getPropertyValue(property: string): string }): Color {
+		return parseColor(css.getPropertyValue(variable).trim()) || Color.red;
+	}
+
+	static fromHex(hex: string): Color {
+		return parseHexColor(hex) || Color.red;
 	}
 
 	static equals(a: Color | null, b: Color | null): boolean {
@@ -678,7 +577,7 @@ export class Color {
 	private _toString?: string;
 	toString(): string {
 		if (!this._toString) {
-			this._toString = Color.Format.CSS.format(this);
+			this._toString = format(this);
 		}
 		return this._toString;
 	}
@@ -715,229 +614,218 @@ export class Color {
 	static readonly transparent = new Color(new RGBA(0, 0, 0, 0));
 }
 
-export namespace Color {
-	export namespace Format {
-		export namespace CSS {
-			export function formatRGB(color: Color): string {
-				if (color.rgba.a === 1) {
-					return `rgb(${color.rgba.r}, ${color.rgba.g}, ${color.rgba.b})`;
-				}
-
-				return Color.Format.CSS.formatRGBA(color);
-			}
-
-			export function formatRGBA(color: Color): string {
-				return `rgba(${color.rgba.r}, ${color.rgba.g}, ${color.rgba.b}, ${Number(color.rgba.a.toFixed(2))})`;
-			}
-
-			export function formatHSL(color: Color): string {
-				if (color.hsla.a === 1) {
-					return `hsl(${color.hsla.h}, ${(color.hsla.s * 100).toFixed(2)}%, ${(color.hsla.l * 100).toFixed(
-						2,
-					)}%)`;
-				}
-
-				return Color.Format.CSS.formatHSLA(color);
-			}
-
-			export function formatHSLA(color: Color): string {
-				return `hsla(${color.hsla.h}, ${(color.hsla.s * 100).toFixed(2)}%, ${(color.hsla.l * 100).toFixed(
-					2,
-				)}%, ${color.hsla.a.toFixed(2)})`;
-			}
-
-			function _toTwoDigitHex(n: number): string {
-				const r = n.toString(16);
-				return r.length !== 2 ? `0${r}` : r;
-			}
-
-			/**
-			 * Formats the color as #RRGGBB
-			 */
-			export function formatHex(color: Color): string {
-				return `#${_toTwoDigitHex(color.rgba.r)}${_toTwoDigitHex(color.rgba.g)}${_toTwoDigitHex(color.rgba.b)}`;
-			}
-
-			/**
-			 * Formats the color as #RRGGBBAA
-			 * If 'compact' is set, colors without transparancy will be printed as #RRGGBB
-			 */
-			export function formatHexA(color: Color, compact = false): string {
-				if (compact && color.rgba.a === 1) {
-					return Color.Format.CSS.formatHex(color);
-				}
-
-				return `#${_toTwoDigitHex(color.rgba.r)}${_toTwoDigitHex(color.rgba.g)}${_toTwoDigitHex(
-					color.rgba.b,
-				)}${_toTwoDigitHex(Math.round(color.rgba.a * 255))}`;
-			}
-
-			/**
-			 * The default format will use HEX if opaque and RGBA otherwise.
-			 */
-			export function format(color: Color): string {
-				if (color.isOpaque()) {
-					return Color.Format.CSS.formatHex(color);
-				}
-
-				return Color.Format.CSS.formatRGBA(color);
-			}
-
-			export function parseString(value: string): Color | null {
-				const length = value.length;
-
-				// Invalid color
-				if (length === 0) {
-					return null;
-				}
-
-				// Begin with a #
-				if (value.charCodeAt(0) === CharCode.Hash) {
-					return Color.Format.CSS.parseHex(value);
-				}
-
-				const result = cssColorRegex.exec(value);
-				if (result == null) {
-					return null;
-				}
-
-				const mode = result[3];
-				let colors: number[];
-				switch (mode) {
-					case 'rgb':
-					case 'hsl':
-						colors = [parseInt(result[4], 10), parseInt(result[5], 10), parseInt(result[6], 10), 1];
-						break;
-					case 'rgba':
-					case 'hsla':
-						colors = [
-							parseInt(result[4], 10),
-							parseInt(result[5], 10),
-							parseInt(result[6], 10),
-							parseFloat(result[7]),
-						];
-						break;
-					default:
-						return null;
-				}
-
-				switch (mode) {
-					case 'rgb':
-					case 'rgba':
-						return new Color(new RGBA(colors[0], colors[1], colors[2], colors[3]));
-					case 'hsl':
-					case 'hsla':
-						return new Color(new HSLA(colors[0], colors[1], colors[2], colors[3]));
-				}
-
-				return Color.red;
-			}
-
-			/**
-			 * Converts an Hex color value to a Color.
-			 * returns r, g, and b are contained in the set [0, 255]
-			 * @param hex string (#RGB, #RGBA, #RRGGBB or #RRGGBBAA).
-			 */
-			export function parseHex(hex: string): Color | null {
-				const length = hex.length;
-
-				if (length === 0) {
-					// Invalid color
-					return null;
-				}
-
-				if (hex.charCodeAt(0) !== CharCode.Hash) {
-					// Does not begin with a #
-					return null;
-				}
-
-				if (length === 7) {
-					// #RRGGBB format
-					const r = 16 * _parseHexDigit(hex.charCodeAt(1)) + _parseHexDigit(hex.charCodeAt(2));
-					const g = 16 * _parseHexDigit(hex.charCodeAt(3)) + _parseHexDigit(hex.charCodeAt(4));
-					const b = 16 * _parseHexDigit(hex.charCodeAt(5)) + _parseHexDigit(hex.charCodeAt(6));
-					return new Color(new RGBA(r, g, b, 1));
-				}
-
-				if (length === 9) {
-					// #RRGGBBAA format
-					const r = 16 * _parseHexDigit(hex.charCodeAt(1)) + _parseHexDigit(hex.charCodeAt(2));
-					const g = 16 * _parseHexDigit(hex.charCodeAt(3)) + _parseHexDigit(hex.charCodeAt(4));
-					const b = 16 * _parseHexDigit(hex.charCodeAt(5)) + _parseHexDigit(hex.charCodeAt(6));
-					const a = 16 * _parseHexDigit(hex.charCodeAt(7)) + _parseHexDigit(hex.charCodeAt(8));
-					return new Color(new RGBA(r, g, b, a / 255));
-				}
-
-				if (length === 4) {
-					// #RGB format
-					const r = _parseHexDigit(hex.charCodeAt(1));
-					const g = _parseHexDigit(hex.charCodeAt(2));
-					const b = _parseHexDigit(hex.charCodeAt(3));
-					return new Color(new RGBA(16 * r + r, 16 * g + g, 16 * b + b));
-				}
-
-				if (length === 5) {
-					// #RGBA format
-					const r = _parseHexDigit(hex.charCodeAt(1));
-					const g = _parseHexDigit(hex.charCodeAt(2));
-					const b = _parseHexDigit(hex.charCodeAt(3));
-					const a = _parseHexDigit(hex.charCodeAt(4));
-					return new Color(new RGBA(16 * r + r, 16 * g + g, 16 * b + b, (16 * a + a) / 255));
-				}
-
-				// Invalid color
-				return null;
-			}
-
-			function _parseHexDigit(charCode: CharCode): number {
-				switch (charCode) {
-					case CharCode.Digit0:
-						return 0;
-					case CharCode.Digit1:
-						return 1;
-					case CharCode.Digit2:
-						return 2;
-					case CharCode.Digit3:
-						return 3;
-					case CharCode.Digit4:
-						return 4;
-					case CharCode.Digit5:
-						return 5;
-					case CharCode.Digit6:
-						return 6;
-					case CharCode.Digit7:
-						return 7;
-					case CharCode.Digit8:
-						return 8;
-					case CharCode.Digit9:
-						return 9;
-					case CharCode.a:
-						return 10;
-					case CharCode.A:
-						return 10;
-					case CharCode.b:
-						return 11;
-					case CharCode.B:
-						return 11;
-					case CharCode.c:
-						return 12;
-					case CharCode.C:
-						return 12;
-					case CharCode.d:
-						return 13;
-					case CharCode.D:
-						return 13;
-					case CharCode.e:
-						return 14;
-					case CharCode.E:
-						return 14;
-					case CharCode.f:
-						return 15;
-					case CharCode.F:
-						return 15;
-				}
-				return 0;
-			}
-		}
+export function formatRGB(color: Color): string {
+	if (color.rgba.a === 1) {
+		return `rgb(${color.rgba.r}, ${color.rgba.g}, ${color.rgba.b})`;
 	}
+
+	return formatRGBA(color);
+}
+
+export function formatRGBA(color: Color): string {
+	return `rgba(${color.rgba.r}, ${color.rgba.g}, ${color.rgba.b}, ${Number(color.rgba.a.toFixed(2))})`;
+}
+
+export function formatHSL(color: Color): string {
+	if (color.hsla.a === 1) {
+		return `hsl(${color.hsla.h}, ${(color.hsla.s * 100).toFixed(2)}%, ${(color.hsla.l * 100).toFixed(2)}%)`;
+	}
+
+	return formatHSLA(color);
+}
+
+export function formatHSLA(color: Color): string {
+	return `hsla(${color.hsla.h}, ${(color.hsla.s * 100).toFixed(2)}%, ${(color.hsla.l * 100).toFixed(
+		2,
+	)}%, ${color.hsla.a.toFixed(2)})`;
+}
+
+function _toTwoDigitHex(n: number): string {
+	const r = n.toString(16);
+	return r.length !== 2 ? `0${r}` : r;
+}
+
+/**
+ * Formats the color as #RRGGBB
+ */
+export function formatHex(color: Color): string {
+	return `#${_toTwoDigitHex(color.rgba.r)}${_toTwoDigitHex(color.rgba.g)}${_toTwoDigitHex(color.rgba.b)}`;
+}
+
+/**
+ * Formats the color as #RRGGBBAA
+ * If 'compact' is set, colors without transparancy will be printed as #RRGGBB
+ */
+export function formatHexA(color: Color, compact = false): string {
+	if (compact && color.rgba.a === 1) {
+		return formatHex(color);
+	}
+
+	return `#${_toTwoDigitHex(color.rgba.r)}${_toTwoDigitHex(color.rgba.g)}${_toTwoDigitHex(
+		color.rgba.b,
+	)}${_toTwoDigitHex(Math.round(color.rgba.a * 255))}`;
+}
+
+/**
+ * The default format will use HEX if opaque and RGBA otherwise.
+ */
+export function format(color: Color): string {
+	if (color.isOpaque()) {
+		return formatHex(color);
+	}
+
+	return formatRGBA(color);
+}
+
+const cssColorRegex = /^((?:rgb|hsl)a?)\((-?\d+%?)[,\s]+(-?\d+%?)[,\s]+(-?\d+%?)[,\s]*(-?[\d.]+%?)?\)$/i;
+export function parseColor(value: string): Color | null {
+	const length = value.length;
+
+	// Invalid color
+	if (length === 0) {
+		return null;
+	}
+
+	// Begin with a #
+	if (value.charCodeAt(0) === CharCode.Hash) {
+		return parseHexColor(value);
+	}
+
+	const result = cssColorRegex.exec(value);
+	if (result == null) {
+		return null;
+	}
+
+	const mode = result[1];
+	let colors: number[];
+	switch (mode) {
+		case 'rgb':
+		case 'hsl':
+			colors = [parseInt(result[2], 10), parseInt(result[3], 10), parseInt(result[4], 10), 1];
+			break;
+		case 'rgba':
+		case 'hsla':
+			colors = [parseInt(result[2], 10), parseInt(result[3], 10), parseInt(result[4], 10), parseFloat(result[5])];
+			break;
+		default:
+			return null;
+	}
+
+	switch (mode) {
+		case 'rgb':
+		case 'rgba':
+			return new Color(new RGBA(colors[0], colors[1], colors[2], colors[3]));
+		case 'hsl':
+		case 'hsla':
+			return new Color(new HSLA(colors[0], colors[1], colors[2], colors[3]));
+	}
+
+	return Color.red;
+}
+
+/**
+ * Converts a Hex color value to a Color.
+ * returns r, g, and b are contained in the set [0, 255]
+ * @param hex string (#RGB, #RGBA, #RRGGBB or #RRGGBBAA).
+ */
+export function parseHexColor(hex: string): Color | null {
+	hex = hex.trim();
+
+	const length = hex.length;
+	if (length === 0) {
+		// Invalid color
+		return null;
+	}
+
+	if (hex.charCodeAt(0) !== CharCode.Hash) {
+		// Does not begin with a #
+		return null;
+	}
+
+	if (length === 7) {
+		// #RRGGBB format
+		const r = 16 * _parseHexDigit(hex.charCodeAt(1)) + _parseHexDigit(hex.charCodeAt(2));
+		const g = 16 * _parseHexDigit(hex.charCodeAt(3)) + _parseHexDigit(hex.charCodeAt(4));
+		const b = 16 * _parseHexDigit(hex.charCodeAt(5)) + _parseHexDigit(hex.charCodeAt(6));
+		return new Color(new RGBA(r, g, b, 1));
+	}
+
+	if (length === 9) {
+		// #RRGGBBAA format
+		const r = 16 * _parseHexDigit(hex.charCodeAt(1)) + _parseHexDigit(hex.charCodeAt(2));
+		const g = 16 * _parseHexDigit(hex.charCodeAt(3)) + _parseHexDigit(hex.charCodeAt(4));
+		const b = 16 * _parseHexDigit(hex.charCodeAt(5)) + _parseHexDigit(hex.charCodeAt(6));
+		const a = 16 * _parseHexDigit(hex.charCodeAt(7)) + _parseHexDigit(hex.charCodeAt(8));
+		return new Color(new RGBA(r, g, b, a / 255));
+	}
+
+	if (length === 4) {
+		// #RGB format
+		const r = _parseHexDigit(hex.charCodeAt(1));
+		const g = _parseHexDigit(hex.charCodeAt(2));
+		const b = _parseHexDigit(hex.charCodeAt(3));
+		return new Color(new RGBA(16 * r + r, 16 * g + g, 16 * b + b));
+	}
+
+	if (length === 5) {
+		// #RGBA format
+		const r = _parseHexDigit(hex.charCodeAt(1));
+		const g = _parseHexDigit(hex.charCodeAt(2));
+		const b = _parseHexDigit(hex.charCodeAt(3));
+		const a = _parseHexDigit(hex.charCodeAt(4));
+		return new Color(new RGBA(16 * r + r, 16 * g + g, 16 * b + b, (16 * a + a) / 255));
+	}
+
+	// Invalid color
+	return null;
+}
+
+function _parseHexDigit(charCode: CharCode): number {
+	switch (charCode) {
+		case CharCode.Digit0:
+			return 0;
+		case CharCode.Digit1:
+			return 1;
+		case CharCode.Digit2:
+			return 2;
+		case CharCode.Digit3:
+			return 3;
+		case CharCode.Digit4:
+			return 4;
+		case CharCode.Digit5:
+			return 5;
+		case CharCode.Digit6:
+			return 6;
+		case CharCode.Digit7:
+			return 7;
+		case CharCode.Digit8:
+			return 8;
+		case CharCode.Digit9:
+			return 9;
+		case CharCode.a:
+			return 10;
+		case CharCode.A:
+			return 10;
+		case CharCode.b:
+			return 11;
+		case CharCode.B:
+			return 11;
+		case CharCode.c:
+			return 12;
+		case CharCode.C:
+			return 12;
+		case CharCode.d:
+			return 13;
+		case CharCode.D:
+			return 13;
+		case CharCode.e:
+			return 14;
+		case CharCode.E:
+			return 14;
+		case CharCode.f:
+			return 15;
+		case CharCode.F:
+			return 15;
+	}
+	return 0;
 }

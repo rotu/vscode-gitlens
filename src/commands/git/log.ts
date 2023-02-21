@@ -1,5 +1,6 @@
 import { GlyphChars, quickPickTitleMaxChars } from '../../constants';
 import type { Container } from '../../container';
+import { showDetailsView } from '../../git/actions/commit';
 import { GitCommit } from '../../git/models/commit';
 import type { GitLog } from '../../git/models/log';
 import { GitReference } from '../../git/models/reference';
@@ -7,10 +8,16 @@ import { Repository } from '../../git/models/repository';
 import { formatPath } from '../../system/formatPath';
 import { pad } from '../../system/string';
 import type { ViewsWithRepositoryFolders } from '../../views/viewBase';
-import { GitActions } from '../gitCommands.actions';
 import { getSteps } from '../gitCommands.utils';
-import type { PartialStepState, StepGenerator } from '../quickCommand';
-import { pickBranchOrTagStep, pickCommitStep, pickRepositoryStep, QuickCommand, StepResult } from '../quickCommand';
+import type { PartialStepState, StepGenerator, StepResult } from '../quickCommand';
+import {
+	endSteps,
+	pickBranchOrTagStep,
+	pickCommitStep,
+	pickRepositoryStep,
+	QuickCommand,
+	StepResultBreak,
+} from '../quickCommand';
 
 interface Context {
 	repos: Repository[];
@@ -107,7 +114,7 @@ export class LogGitCommand extends QuickCommand<State> {
 				} else {
 					const result = yield* pickRepositoryStep(state, context);
 					// Always break on the first step (so we will go back)
-					if (result === StepResult.Break) break;
+					if (result === StepResultBreak) break;
 
 					state.repo = result;
 				}
@@ -127,7 +134,7 @@ export class LogGitCommand extends QuickCommand<State> {
 					value: context.selectedBranchOrTag == null ? state.reference?.ref : undefined,
 					ranges: true,
 				});
-				if (result === StepResult.Break) {
+				if (result === StepResultBreak) {
 					// If we skipped the previous step, make sure we back up past it
 					if (skippedStepOne) {
 						state.counter--;
@@ -180,7 +187,7 @@ export class LogGitCommand extends QuickCommand<State> {
 							: 'Choose a commit',
 					picked: state.reference?.ref,
 				});
-				if (result === StepResult.Break) continue;
+				if (result === StepResultBreak) continue;
 
 				state.reference = result;
 			}
@@ -191,11 +198,11 @@ export class LogGitCommand extends QuickCommand<State> {
 
 			let result: StepResult<ReturnType<typeof getSteps>>;
 			if (state.openPickInView) {
-				void GitActions.Commit.showDetailsView(state.reference as GitCommit, {
+				void showDetailsView(state.reference as GitCommit, {
 					pin: false,
 					preserveFocus: false,
 				});
-				result = StepResult.Break;
+				result = StepResultBreak;
 			} else {
 				result = yield* getSteps(
 					this.container,
@@ -212,11 +219,11 @@ export class LogGitCommand extends QuickCommand<State> {
 			}
 
 			state.counter--;
-			if (result === StepResult.Break) {
-				QuickCommand.endSteps(state);
+			if (result === StepResultBreak) {
+				endSteps(state);
 			}
 		}
 
-		return state.counter < 0 ? StepResult.Break : undefined;
+		return state.counter < 0 ? StepResultBreak : undefined;
 	}
 }

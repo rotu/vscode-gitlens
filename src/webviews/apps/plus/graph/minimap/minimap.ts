@@ -1,7 +1,8 @@
 import { css, customElement, FASTElement, html, observable, ref } from '@microsoft/fast-element';
 import type { Chart, DataItem, RegionOptions } from 'billboard.js';
-import { bb, selection, spline, zoom } from 'billboard.js';
 import { groupByMap } from '../../../../../system/array';
+import { debug } from '../../../../../system/decorators/log';
+import { debounce } from '../../../../../system/function';
 import { first, flatMap, map, some, union } from '../../../../../system/iterable';
 import { pluralize } from '../../../../../system/string';
 import { formatDate, formatNumeric, fromNow } from '../../../shared/date';
@@ -18,13 +19,19 @@ export interface RemoteMarker {
 	current?: boolean;
 }
 
+export interface StashMarker {
+	type: 'stash';
+	name: string;
+	current?: undefined;
+}
+
 export interface TagMarker {
 	type: 'tag';
 	name: string;
 	current?: undefined;
 }
 
-export type GraphMinimapMarker = BranchMarker | RemoteMarker | TagMarker;
+export type GraphMinimapMarker = BranchMarker | RemoteMarker | StashMarker | TagMarker;
 
 export interface GraphMinimapSearchResultMarker {
 	type: 'search-result';
@@ -84,6 +91,10 @@ const styles = css`
 	}
 
 	/*-- Grid --*/
+	.bb-grid {
+		pointer-events: none;
+	}
+
 	.bb-xgrid-focus line {
 		stroke: var(--color-graph-minimap-focusLine);
 	}
@@ -121,23 +132,24 @@ const styles = css`
 
 	/*-- Regions --*/
 
+	.bb-regions {
+		pointer-events: none;
+	}
+
+	.bb-region > rect:not([x]) {
+		display: none;
+	}
+
 	.bb-region.visible-area {
 		fill: var(--color-graph-minimap-visibleAreaBackground);
-		/* transform: translateY(26px); */
 		transform: translateY(-4px);
-		z-index: 0;
 	}
 	.bb-region.visible-area > rect {
-		/* height: 10px; */
 		height: 100%;
 	}
 
-	/* :host(:hover) .bb-region.visible-area {
-		fill: var(--color-graph-minimap-visibleAreaHoverBackground);
-	} */
-
 	.bb-region.marker-result {
-		fill: var(--color-graph-minimap-resultMarker);
+		fill: var(--color-graph-minimap-marker-highlights);
 		transform: translate(-1px, -4px);
 		z-index: 10;
 	}
@@ -147,53 +159,83 @@ const styles = css`
 	}
 
 	.bb-region.marker-head {
-		fill: var(--color-graph-minimap-headMarker);
-		transform: translate(0px, -4px);
-		z-index: 5;
+		fill: var(--color-graph-minimap-marker-head);
+		stroke: var(--color-graph-minimap-marker-head);
+		transform: translate(-1px, -4px);
 	}
 	.bb-region.marker-head > rect {
-		width: 2px;
+		width: 1px;
 		height: 100%;
 	}
 
+	.bb-region.marker-head-arrow-left {
+		fill: var(--color-graph-minimap-marker-head);
+		stroke: var(--color-graph-minimap-marker-head);
+		transform: translate(-5px, -5px) skewX(45deg);
+	}
+	.bb-region.marker-head-arrow-left > rect {
+		width: 3px;
+		height: 3px;
+	}
+
+	.bb-region.marker-head-arrow-right {
+		fill: var(--color-graph-minimap-marker-head);
+		stroke: var(--color-graph-minimap-marker-head);
+		transform: translate(1px, -5px) skewX(-45deg);
+	}
+	.bb-region.marker-head-arrow-right > rect {
+		width: 3px;
+		height: 3px;
+	}
+
 	.bb-region.marker-upstream {
-		fill: var(--color-graph-minimap-upstreamMarker);
-		transform: translate(0px, -4px);
-		z-index: 4;
+		fill: var(--color-graph-minimap-marker-upstream);
+		stroke: var(--color-graph-minimap-marker-upstream);
+		transform: translate(-1px, -4px);
 	}
 	.bb-region.marker-upstream > rect {
-		width: 2px;
+		width: 1px;
 		height: 100%;
 	}
 
 	.bb-region.marker-branch {
-		fill: var(--color-graph-minimap-branchMarker);
-		transform: translate(-2px, 26px);
-		z-index: 3;
+		fill: var(--color-graph-minimap-marker-local-branches);
+		stroke: var(--color-graph-minimap-marker-local-branches);
+		transform: translate(-2px, 32px);
 	}
 	.bb-region.marker-branch > rect {
-		width: 2px;
-		height: 10px;
+		width: 3px;
+		height: 3px;
 	}
 
 	.bb-region.marker-remote {
-		fill: var(--color-graph-minimap-remoteMarker);
-		transform: translate(-3px, 31px);
-		z-index: 2;
+		fill: var(--color-graph-minimap-marker-remote-branches);
+		stroke: var(--color-graph-minimap-marker-remote-branches);
+		transform: translate(-2px, 26px);
 	}
 	.bb-region.marker-remote > rect {
-		width: 2px;
-		height: 4px;
+		width: 3px;
+		height: 3px;
+	}
+
+	.bb-region.marker-stash {
+		fill: var(--color-graph-minimap-marker-stashes);
+		stroke: var(--color-graph-minimap-marker-stashes);
+		transform: translate(-2px, 32px);
+	}
+	.bb-region.marker-stash > rect {
+		width: 3px;
+		height: 3px;
 	}
 
 	.bb-region.marker-tag {
-		fill: var(--color-graph-minimap-tagMarker);
-		transform: translate(1px, 31px);
-		z-index: 1;
+		fill: var(--color-graph-minimap-marker-tags);
+		stroke: var(--color-graph-minimap-marker-tags);
+		transform: translate(-2px, 26px);
 	}
 	.bb-region.marker-tag > rect {
-		width: 1px;
-		height: 4px;
+		width: 3px;
+		height: 3px;
 	}
 
 	/*-- Zoom region --*/
@@ -294,35 +336,55 @@ const styles = css`
 	.bb-tooltip .refs .branch {
 		border-radius: 3px;
 		padding: 0 4px;
-		background-color: var(--color-graph-minimap-branchBackground);
-		border: 1px solid var(--color-graph-minimap-branchBorder);
-		color: var(--color-graph-minimap-branchForeground);
+		background-color: var(--color-graph-minimap-tip-branchBackground);
+		border: 1px solid var(--color-graph-minimap-tip-branchBorder);
+		color: var(--color-graph-minimap-tip-branchForeground);
 	}
 	.bb-tooltip .refs .branch.current {
-		background-color: var(--color-graph-minimap-headBackground);
-		border: 1px solid var(--color-graph-minimap-headBorder);
-		color: var(--color-graph-minimap-headForeground);
+		background-color: var(--color-graph-minimap-tip-headBackground);
+		border: 1px solid var(--color-graph-minimap-tip-headBorder);
+		color: var(--color-graph-minimap-tip-headForeground);
 	}
 	.bb-tooltip .refs .remote {
 		border-radius: 3px;
 		padding: 0 4px;
-		background-color: var(--color-graph-minimap-remoteBackground);
-		border: 1px solid var(--color-graph-minimap-remoteBorder);
-		color: var(--color-graph-minimap-remoteForeground);
+		background-color: var(--color-graph-minimap-tip-remoteBackground);
+		border: 1px solid var(--color-graph-minimap-tip-remoteBorder);
+		color: var(--color-graph-minimap-tip-remoteForeground);
 	}
 	.bb-tooltip .refs .remote.current {
-		background-color: var(--color-graph-minimap-upstreamBackground);
-		border: 1px solid var(--color-graph-minimap-upstreamBorder);
-		color: var(--color-graph-minimap-upstreamForeground);
+		background-color: var(--color-graph-minimap-tip-upstreamBackground);
+		border: 1px solid var(--color-graph-minimap-tip-upstreamBorder);
+		color: var(--color-graph-minimap-tip-upstreamForeground);
+	}
+	.bb-tooltip .refs .stash {
+		border-radius: 3px;
+		padding: 0 4px;
+		background-color: var(--color-graph-minimap-tip-stashBackground);
+		border: 1px solid var(--color-graph-minimap-tip-stashBorder);
+		color: var(--color-graph-minimap-tip-stashForeground);
 	}
 	.bb-tooltip .refs .tag {
 		border-radius: 3px;
 		padding: 0 4px;
-		background-color: var(--color-graph-minimap-tagBackground);
-		border: 1px solid var(--color-graph-minimap-tagBorder);
-		color: var(--color-graph-minimap-tagForeground);
+		background-color: var(--color-graph-minimap-tip-tagBackground);
+		border: 1px solid var(--color-graph-minimap-tip-tagBorder);
+		color: var(--color-graph-minimap-tip-tagForeground);
 	}
 `;
+
+const markerZOrder = [
+	'marker-result',
+	'marker-head-arrow-left',
+	'marker-head-arrow-right',
+	'marker-head',
+	'marker-upstream',
+	'marker-branch',
+	'marker-stash',
+	'marker-remote',
+	'marker-tag',
+	'visible-area',
+];
 
 @customElement({ name: 'graph-minimap', template: template, styles: styles })
 export class GraphMinimap extends FASTElement {
@@ -336,12 +398,14 @@ export class GraphMinimap extends FASTElement {
 
 	@observable
 	activeDay: number | undefined;
+	@debug({ singleLine: true })
 	protected activeDayChanged() {
 		this.select(this.activeDay);
 	}
 
 	@observable
 	data: Map<number, GraphMinimapStats | null> | undefined;
+	@debug({ singleLine: true })
 	protected dataChanged(
 		_oldVal?: Map<number, GraphMinimapStats | null>,
 		_newVal?: Map<number, GraphMinimapStats | null>,
@@ -377,6 +441,7 @@ export class GraphMinimap extends FASTElement {
 
 	@observable
 	visibleDays: { top: number; bottom: number } | undefined;
+	@debug({ singleLine: true })
 	protected visibleDaysChanged() {
 		this._chart?.regions.remove({ classes: ['visible-area'] });
 		if (this.visibleDays == null) return;
@@ -387,7 +452,7 @@ export class GraphMinimap extends FASTElement {
 	override connectedCallback(): void {
 		super.connectedCallback();
 
-		this.loadChart();
+		this.dataChanged(undefined, undefined, false);
 	}
 
 	override disconnectedCallback(): void {
@@ -401,6 +466,7 @@ export class GraphMinimap extends FASTElement {
 		return (this._chart as any).internal;
 	}
 
+	@debug({ singleLine: true })
 	select(date: number | Date | undefined, trackOnly: boolean = false) {
 		if (date == null) {
 			this.unselect();
@@ -422,6 +488,7 @@ export class GraphMinimap extends FASTElement {
 		}
 	}
 
+	@debug({ singleLine: true })
 	unselect(date?: number | Date, focus: boolean = false) {
 		if (focus) {
 			this.getInternalChart().hideGridFocus();
@@ -454,19 +521,37 @@ export class GraphMinimap extends FASTElement {
 		if (this._markerRegions == null) {
 			if (this.markers != null) {
 				const regions = flatMap(this.markers, ([day, markers]) =>
-					map<GraphMinimapMarker, RegionOptions>(
-						markers,
-						m =>
-							({
-								axis: 'x',
-								start: day,
-								end: day,
-								class: m.current
-									? m.type === 'branch'
-										? 'marker-head'
-										: 'marker-upstream'
-									: `marker-${m.type}`,
-							} satisfies RegionOptions),
+					flatMap<GraphMinimapMarker, RegionOptions>(markers, m =>
+						m.current && m.type === 'branch'
+							? [
+									{
+										axis: 'x',
+										start: day,
+										end: day,
+										class: 'marker-head',
+									} satisfies RegionOptions,
+									{
+										axis: 'x',
+										start: day,
+										end: day,
+										class: 'marker-head-arrow-left',
+									} satisfies RegionOptions,
+									{
+										axis: 'x',
+										start: day,
+										end: day,
+										class: 'marker-head-arrow-right',
+									} satisfies RegionOptions,
+							  ]
+							: [
+									{
+										axis: 'x',
+										start: day,
+										end: day,
+										class:
+											m.current && m.type === 'remote' ? 'marker-upstream' : `marker-${m.type}`,
+									} satisfies RegionOptions,
+							  ],
 					),
 				);
 				this._markerRegions = regions;
@@ -482,14 +567,16 @@ export class GraphMinimap extends FASTElement {
 			let regions: Iterable<RegionOptions> = this.getMarkerRegions();
 
 			if (this.visibleDays != null) {
-				regions = union(regions, [this.getVisibleAreaRegion(this.visibleDays)]);
+				regions = union([this.getVisibleAreaRegion(this.visibleDays)], regions);
 			}
 
 			if (this.searchResults != null) {
 				regions = union(regions, this.getSearchResultsRegions(this.searchResults));
 			}
 
-			this._regions = [...regions];
+			this._regions = [...regions].sort(
+				(a, b) => markerZOrder.indexOf(b.class ?? '') - markerZOrder.indexOf(a.class ?? ''),
+			);
 		}
 		return this._regions;
 	}
@@ -516,7 +603,15 @@ export class GraphMinimap extends FASTElement {
 		} satisfies RegionOptions;
 	}
 
+	private _loading: Promise<void> | undefined;
 	private loadChart() {
+		if (this._loading == null) {
+			this._loading = this.loadChartCore().then(() => (this._loading = undefined));
+		}
+	}
+
+	@debug({ singleLine: true })
+	private async loadChartCore() {
 		if (!this.data?.size) {
 			this._chart?.destroy();
 			this._chart = undefined!;
@@ -577,11 +672,56 @@ export class GraphMinimap extends FASTElement {
 
 		const regions = this.getAllRegions();
 
-		// calculate the max value for the y-axis to avoid flattening the graph because of outlier changes
-		const p98 = [...activity].sort((a, b) => a - b)[Math.floor(activity.length * 0.98)];
-		const yMax = p98 + Math.min(changesMax - p98, p98 * 0.02) + 100;
+		// Calculate the max value for the y-axis to avoid flattening the graph by calculating a z-score of the activity data to identify outliers
+
+		const sortedStats = [];
+
+		let sum = 0;
+		let sumOfSquares = 0;
+		for (const s of activity) {
+			// Remove all the 0s
+			if (s === 0) continue;
+
+			sortedStats.push(s);
+			sum += s;
+			sumOfSquares += s ** 2;
+		}
+
+		sortedStats.sort((a, b) => a - b);
+
+		const length = sortedStats.length;
+		const mean = sum / length;
+		const stdDev = Math.sqrt(sumOfSquares / length - mean ** 2);
+
+		// Loop backwards through the sorted stats to find the first non-outlier
+		let outlierBorderIndex = -1;
+		for (let i = length - 1; i >= 0; i--) {
+			// If the z-score ((p: number) => (p - mean) / stdDev) is less than or equal to 3, it's not an outlier
+			if (Math.abs((sortedStats[i] - mean) / stdDev) <= 3) {
+				outlierBorderIndex = i;
+				break;
+			}
+		}
+
+		const q1 = sortedStats[Math.floor(length * 0.25)];
+		const q3 = sortedStats[Math.floor(length * 0.75)];
+		const max = sortedStats[length - 1];
+
+		const iqr = q3 - q1;
+		const upperFence = q3 + 3 * iqr;
+		const outlierBorderMax = sortedStats[outlierBorderIndex];
+
+		// Use a mix of z-score vs IQR -- z-score seems to do better for smaller outliers, but IQR seems to do better for larger outliers
+		const yMax = Math.floor(
+			Math.min(
+				max,
+				upperFence > max - upperFence ? outlierBorderMax : upperFence + (outlierBorderMax - upperFence) / 2,
+			) +
+				upperFence * 0.1,
+		);
 
 		if (this._chart == null) {
+			const { bb, selection, spline, zoom } = await import(/* webpackChunkName: "billboard" */ 'billboard.js');
 			this._chart = bb.generate({
 				bindto: this.chart,
 				data: {
@@ -589,21 +729,14 @@ export class GraphMinimap extends FASTElement {
 					xSort: false,
 					axes: {
 						activity: 'y',
-						additions: 'y',
-						deletions: 'y',
 					},
 					columns: [
 						['date', ...dates],
 						['activity', ...activity],
-						// ['additions', ...additions],
-						// ['deletions', ...deletions],
 					],
 					names: {
 						activity: 'Activity',
-						// additions: 'Additions',
-						// deletions: 'Deletions',
 					},
-					// hide: ['additions', 'deletions'],
 					onclick: d => {
 						if (d.id !== 'activity') return;
 
@@ -622,29 +755,13 @@ export class GraphMinimap extends FASTElement {
 						enabled: selection(),
 						grouped: true,
 						multiple: false,
-						// isselectable: d => {
-						// 	if (d.id !== 'activity') return false;
-
-						// 	return (this.data?.get(getDay(new Date(d.x)))?.commits ?? 0) > 0;
-						// },
 					},
 					colors: {
 						activity: 'var(--color-graph-minimap-line0)',
-						// additions: 'rgba(73, 190, 71, 0.7)',
-						// deletions: 'rgba(195, 32, 45, 0.7)',
 					},
-					groups: [['additions', 'deletions']],
 					types: {
 						activity: spline(),
-						// additions: bar(),
-						// deletions: bar(),
 					},
-				},
-				area: {
-					linearGradient: true,
-					front: true,
-					below: true,
-					zerobased: true,
 				},
 				axis: {
 					x: {
@@ -657,23 +774,9 @@ export class GraphMinimap extends FASTElement {
 						max: yMax,
 						show: true,
 						padding: {
-							// 	top: 10,
 							bottom: 8,
 						},
 					},
-					// y2: {
-					// 	min: y2Min,
-					// 	max: yMax,
-					// 	show: true,
-					// 	// padding: {
-					// 	// 	top: 10,
-					// 	// 	bottom: 0,
-					// 	// },
-					// },
-				},
-				bar: {
-					zerobased: false,
-					width: { max: 3 },
 				},
 				clipPath: false,
 				grid: {
@@ -709,7 +812,7 @@ export class GraphMinimap extends FASTElement {
 				},
 				spline: {
 					interpolation: {
-						type: 'catmull-rom',
+						type: 'monotone-x',
 					},
 				},
 				tooltip: {
@@ -722,6 +825,8 @@ export class GraphMinimap extends FASTElement {
 						if (markers?.length) {
 							groups = groupByMap(markers, m => m.type);
 						}
+
+						const stashesCount = groups?.get('stash')?.length ?? 0;
 
 						return /*html*/ `<div class="bb-tooltip">
 							<div class="header">
@@ -781,6 +886,7 @@ export class GraphMinimap extends FASTElement {
 										)
 										.join('') ?? ''
 								}
+								${stashesCount ? /*html*/ `<span class="stash">${pluralize('stash', stashesCount, { plural: 'stashes' })}</span>` : ''}
 								${
 									groups
 										?.get('tag')
@@ -792,6 +898,7 @@ export class GraphMinimap extends FASTElement {
 							}
 						</div>`;
 					},
+					grouped: true,
 					position: (_data, width, _height, element, pos) => {
 						const { x } = pos;
 						const rect = (element as HTMLElement).getBoundingClientRect();
@@ -808,14 +915,9 @@ export class GraphMinimap extends FASTElement {
 				zoom: {
 					enabled: zoom(),
 					rescale: false,
-					resetButton: {
-						text: '',
-					},
 					type: 'wheel',
-					onzoom: () => {
-						// Reset the active day when zooming because it fails to update properly
-						queueMicrotask(() => this.activeDayChanged());
-					},
+					// Reset the active day when zooming because it fails to update properly
+					onzoom: debounce(() => this.activeDayChanged(), 250),
 				},
 				onafterinit: function () {
 					const xAxis = this.$.main.selectAll<Element, any>('.bb-axis-x').node();
@@ -825,12 +927,16 @@ export class GraphMinimap extends FASTElement {
 					yAxis?.remove();
 
 					const grid = this.$.main.selectAll<Element, any>('.bb-grid').node();
-					grid?.removeAttribute('clip-path');
+					try {
+						grid?.removeAttribute('clip-path');
+					} catch {}
 
-					// Move the regions to be on top of the bars
-					const bars = this.$.main.selectAll<Element, any>('.bb-chart-bars').node();
+					// Move the regions to be after (on top of) the chart
 					const regions = this.$.main.selectAll<Element, any>('.bb-regions').node();
-					bars?.insertAdjacentElement('afterend', regions!);
+					const chart = this.$.main.selectAll<Element, any>('.bb-chart').node();
+					if (regions != null && chart != null) {
+						chart.insertAdjacentElement('afterend', regions);
+					}
 				},
 			});
 		} else {
@@ -838,12 +944,9 @@ export class GraphMinimap extends FASTElement {
 				columns: [
 					['date', ...dates],
 					['activity', ...activity],
-					// ['additions', ...additions],
-					// ['deletions', ...deletions],
 				],
 			});
-			// this._chart.axis.min({ y: 0, y2: y2Min });
-			this._chart.axis.max({ y: yMax /*, y2: yMax*/ });
+			this._chart.axis.max({ y: yMax });
 
 			this._chart.regions(regions);
 		}

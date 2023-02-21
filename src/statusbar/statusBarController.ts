@@ -7,11 +7,12 @@ import type { Container } from '../container';
 import { CommitFormatter } from '../git/formatters/commitFormatter';
 import type { GitCommit } from '../git/models/commit';
 import type { PullRequest } from '../git/models/pullRequest';
-import { Hovers } from '../hovers/hovers';
-import type { LogScope } from '../logger';
+import { detailsMessage } from '../hovers/hovers';
 import { Logger } from '../logger';
+import type { LogScope } from '../logScope';
+import { getLogScope } from '../logScope';
 import { asCommand } from '../system/command';
-import { debug, getLogScope } from '../system/decorators/log';
+import { debug } from '../system/decorators/log';
 import { once } from '../system/event';
 import { PromiseCancelledError } from '../system/promise';
 import { isTextEditor } from '../system/utils';
@@ -372,7 +373,7 @@ export class StatusBarController implements Disposable {
 	) {
 		if (cancellationToken.isCancellationRequested) return;
 
-		const tooltip = await Hovers.detailsMessage(
+		const tooltip = await detailsMessage(
 			commit,
 			commit.getGitUri(),
 			commit.lines[0].line,

@@ -26,6 +26,7 @@ import {
 import { Features } from '../../features';
 import { GitSearchError } from '../../git/errors';
 import type {
+	GitCaches,
 	GitProvider,
 	NextComparisonUrisResult,
 	PagedResult,
@@ -77,10 +78,11 @@ import { getRemoteProviderMatcher, loadRemoteProviders } from '../../git/remotes
 import type { RichRemoteProvider } from '../../git/remotes/richRemoteProvider';
 import type { GitSearch, GitSearchResultData, GitSearchResults, SearchQuery } from '../../git/search';
 import { getSearchQueryComparisonKey, parseSearchQuery } from '../../git/search';
-import type { LogScope } from '../../logger';
 import { Logger } from '../../logger';
+import type { LogScope } from '../../logScope';
+import { getLogScope } from '../../logScope';
 import { gate } from '../../system/decorators/gate';
-import { debug, getLogScope, log } from '../../system/decorators/log';
+import { debug, log } from '../../system/decorators/log';
 import { filterMap, first, last, some } from '../../system/iterable';
 import { isAbsolute, isFolderGlob, maybeUri, normalizePath, relative } from '../../system/path';
 import { fastestSettled, getSettledValue } from '../../system/promise';
@@ -95,6 +97,7 @@ import type { GitHubApi } from './github';
 import { fromCommitFileStatus } from './models';
 
 const doubleQuoteRegex = /"/g;
+const emptyArray = Object.freeze([]) as unknown as any[];
 const emptyPagedResult: PagedResult<any> = Object.freeze({ values: [] });
 const emptyPromise: Promise<GitBlame | GitDiff | GitLog | undefined> = Promise.resolve(undefined);
 
@@ -133,7 +136,16 @@ export class GitHubGitProvider implements GitProvider, Disposable {
 	private readonly _disposables: Disposable[] = [];
 
 	constructor(private readonly container: Container) {
-		this._disposables.push(authentication.onDidChangeSessions(this.onAuthenticationSessionsChanged, this));
+		this._disposables.push(
+			this.container.events.on(
+				'git:cache:reset',
+				e =>
+					e.data.repoPath
+						? this.resetCache(e.data.repoPath, ...(e.data.caches ?? emptyArray))
+						: this.resetCaches(...(e.data.caches ?? emptyArray)),
+				authentication.onDidChangeSessions(this.onAuthenticationSessionsChanged, this),
+			),
+		);
 	}
 
 	dispose() {
@@ -347,10 +359,13 @@ export class GitHubGitProvider implements GitProvider, Disposable {
 	}
 
 	@log()
-	async addRemote(_repoPath: string, _name: string, _url: string): Promise<void> {}
+	async addRemote(_repoPath: string, _name: string, _url: string, _options?: { fetch?: boolean }): Promise<void> {}
 
 	@log()
-	async pruneRemote(_repoPath: string, _remoteName: string): Promise<void> {}
+	async pruneRemote(_repoPath: string, _name: string): Promise<void> {}
+
+	@log()
+	async removeRemote(_repoPath: string, _name: string): Promise<void> {}
 
 	@log()
 	async applyChangesToWorkingFile(_uri: GitUri, _ref1?: string, _ref2?: string): Promise<void> {}
@@ -368,18 +383,34 @@ export class GitHubGitProvider implements GitProvider, Disposable {
 	): Promise<void> {}
 
 	@log({ singleLine: true })
-	resetCaches(
-		...affects: ('branches' | 'contributors' | 'providers' | 'remotes' | 'stashes' | 'status' | 'tags')[]
-	): void {
-		if (affects.length === 0 || affects.includes('branches')) {
+	private resetCache(
+		repoPath: string,
+		...caches: ('branches' | 'contributors' | 'providers' | 'remotes' | 'stashes' | 'status' | 'tags')[]
+	) {
+		if (caches.length === 0 || caches.includes('branches')) {
+			this._branchesCache.delete(repoPath);
+		}
+
+		if (caches.length === 0 || caches.includes('tags')) {
+			this._tagsCache.delete(repoPath);
+		}
+
+		if (caches.length === 0) {
+			this._repoInfoCache.delete(repoPath);
+		}
+	}
+
+	@log({ singleLine: true })
+	private resetCaches(...caches: GitCaches[]): void {
+		if (caches.length === 0 || caches.includes('branches')) {
 			this._branchesCache.clear();
 		}
 
-		if (affects.length === 0 || affects.includes('tags')) {
+		if (caches.length === 0 || caches.includes('tags')) {
 			this._tagsCache.clear();
 		}
 
-		if (affects.length === 0) {
+		if (caches.length === 0) {
 			this._repoInfoCache.clear();
 		}
 	}
@@ -1186,6 +1217,7 @@ export class GitHubGitProvider implements GitProvider, Disposable {
 								}),
 							},
 						}),
+						upstream: branch.upstream?.name,
 					},
 				];
 				refRemoteHeads = [
@@ -1210,6 +1242,7 @@ export class GitHubGitProvider implements GitProvider, Disposable {
 								}),
 							},
 						}),
+						current: true,
 					},
 				];
 			} else {
@@ -1338,12 +1371,6 @@ export class GitHubGitProvider implements GitProvider, Disposable {
 				);
 			},
 		};
-	}
-
-	@log()
-	async getOldestUnpushedRefForFile(_repoPath: string, _uri: Uri): Promise<string | undefined> {
-		// TODO@eamodio until we have access to the RemoteHub change store there isn't anything we can do here
-		return undefined;
 	}
 
 	@log()
@@ -2122,6 +2149,12 @@ export class GitHubGitProvider implements GitProvider, Disposable {
 	}
 
 	@log()
+	async getOldestUnpushedRefForFile(_repoPath: string, _uri: Uri): Promise<string | undefined> {
+		// TODO@eamodio until we have access to the RemoteHub change store there isn't anything we can do here
+		return undefined;
+	}
+
+	@log()
 	async getPreviousComparisonUris(
 		repoPath: string,
 		uri: Uri,
@@ -2463,6 +2496,11 @@ export class GitHubGitProvider implements GitProvider, Disposable {
 
 		// TODO@eamodio: Implement this
 		return [];
+	}
+
+	async getUniqueRepositoryId(_repoPath: string): Promise<string | undefined> {
+		// TODO@ramint implement this if there is a way.
+		return undefined;
 	}
 
 	@log()

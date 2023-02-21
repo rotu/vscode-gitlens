@@ -1,26 +1,27 @@
 import type { CancellationToken, ConfigurationChangeEvent, Event, WorkspaceFolder } from 'vscode';
 import { Disposable, EventEmitter, ProgressLocation, RelativePattern, Uri, window, workspace } from 'vscode';
+import { md5 } from '@env/crypto';
 import { ForcePushMode } from '../../@types/vscode.git.enums';
 import type { CreatePullRequestActionContext } from '../../api/gitlens';
 import { configuration } from '../../configuration';
 import { CoreGitCommands, CoreGitConfiguration, Schemes } from '../../constants';
 import type { Container } from '../../container';
 import type { FeatureAccess, Features, PlusFeatures } from '../../features';
-import { Logger } from '../../logger';
+import { getLoggableName, Logger } from '../../logger';
+import { getLogScope } from '../../logScope';
 import { showCreatePullRequestPrompt, showGenericErrorMessage } from '../../messages';
 import { asRepoComparisonKey } from '../../repositories';
 import { filterMap, groupByMap } from '../../system/array';
 import { executeActionCommand, executeCoreGitCommand } from '../../system/command';
 import { formatDate, fromNow } from '../../system/date';
 import { gate } from '../../system/decorators/gate';
-import { debug, getLogScope, log, logName } from '../../system/decorators/log';
+import { debug, log, logName } from '../../system/decorators/log';
 import { debounce } from '../../system/function';
 import { filter, join, some } from '../../system/iterable';
 import { updateRecordValue } from '../../system/object';
 import { basename, normalizePath } from '../../system/path';
-import { md5 } from '../../system/string';
 import { runGitCommandInTerminal } from '../../terminal';
-import type { GitProviderDescriptor } from '../gitProvider';
+import type { GitDir, GitProviderDescriptor, GitRepositoryCaches } from '../gitProvider';
 import type { RemoteProviders } from '../remotes/remoteProviders';
 import { loadRemoteProviders } from '../remotes/remoteProviders';
 import type { RichRemoteProvider } from '../remotes/richRemoteProvider';
@@ -40,6 +41,8 @@ import type { GitStash } from './stash';
 import type { GitStatus } from './status';
 import type { GitTag, TagSortOptions } from './tag';
 import type { GitWorktree } from './worktree';
+
+const emptyArray = Object.freeze([]) as unknown as any[];
 
 const millisecondsPerMinute = 60 * 1000;
 const millisecondsPerHour = 60 * 60 * 1000;
@@ -176,7 +179,11 @@ export class Repository implements Disposable {
 		return this._onDidChangeFileSystem.event;
 	}
 
-	readonly formattedName: string;
+	get formattedName(): string {
+		// return this.isMaybeWorktree() === true ? `${this.name} (worktree)` : this.name;
+		return this.name;
+	}
+
 	readonly id: string;
 	readonly index: number;
 	readonly name: string;
@@ -230,7 +237,6 @@ export class Repository implements Disposable {
 			// 	index: container.git.repositoryCount,
 			// };
 		}
-		this.formattedName = this.name;
 		this.index = folder?.index ?? container.git.repositoryCount;
 
 		this.id = asRepoComparisonKey(uri);
@@ -259,6 +265,14 @@ export class Repository implements Disposable {
 	private async setupRepoWatchersCore() {
 		const disposables: Disposable[] = [];
 
+		disposables.push(
+			this.container.events.on('git:cache:reset', e => {
+				if (!e.data.repoPath || e.data.repoPath === this.path) {
+					this.resetCaches(...(e.data.caches ?? emptyArray));
+				}
+			}),
+		);
+
 		const watcher = workspace.createFileSystemWatcher(new RelativePattern(this.uri, '**/.gitignore'));
 		disposables.push(
 			watcher,
@@ -279,7 +293,7 @@ export class Repository implements Disposable {
 			return watcher;
 		}
 
-		const gitDir = await this.container.git.getGitDir(this.path);
+		const gitDir = await this.getGitDir();
 		if (gitDir != null) {
 			if (gitDir?.commonUri == null) {
 				watch.call(
@@ -301,6 +315,10 @@ export class Repository implements Disposable {
 
 		this._remotesDisposable?.dispose();
 		this._disposable.dispose();
+	}
+
+	toString(): string {
+		return `${getLoggableName(this)}(${this.id})`;
 	}
 
 	get virtual(): boolean {
@@ -449,6 +467,23 @@ export class Repository implements Disposable {
 	}
 
 	@log()
+	async addRemote(name: string, url: string, options?: { fetch?: boolean }): Promise<GitRemote | undefined> {
+		await this.container.git.addRemote(this.path, name, url, options);
+		const [remote] = await this.getRemotes({ filter: r => r.url === url });
+		return remote;
+	}
+
+	@log()
+	pruneRemote(name: string): Promise<void> {
+		return this.container.git.pruneRemote(this.path, name);
+	}
+
+	@log()
+	removeRemote(name: string): Promise<void> {
+		return this.container.git.removeRemote(this.path, name);
+	}
+
+	@log()
 	branch(...args: string[]) {
 		this.runTerminalCommand('branch', ...args);
 	}
@@ -586,6 +621,15 @@ export class Repository implements Disposable {
 		return this.container.git.getContributors(this.path, options);
 	}
 
+	private _gitDir: GitDir | undefined;
+	private _gitDirPromise: Promise<GitDir | undefined> | undefined;
+	private getGitDir(): Promise<GitDir | undefined> {
+		if (this._gitDirPromise == null) {
+			this._gitDirPromise = this.container.git.getGitDir(this.path).then(gd => (this._gitDir = gd));
+		}
+		return this._gitDirPromise;
+	}
+
 	private _lastFetched: number | undefined;
 	@gate()
 	async getLastFetched(): Promise<number> {
@@ -604,6 +648,15 @@ export class Repository implements Disposable {
 		}
 
 		return this._lastFetched ?? 0;
+	}
+
+	@gate()
+	async getMainRepository(): Promise<Repository | undefined> {
+		const gitDir = await this.getGitDir();
+		if (gitDir?.commonUri == null) return this;
+
+		// If the repository isn't already opened, then open it as a "closed" repo (won't show up in the UI)
+		return this.container.git.getOrOpenRepository(gitDir.commonUri, { closeOnOpen: true });
 	}
 
 	getMergeStatus(): Promise<GitMergeStatus | undefined> {
@@ -660,15 +713,24 @@ export class Repository implements Disposable {
 		return this.container.git.getStatusForRepo(this.path);
 	}
 
+	async getTag(name: string): Promise<GitTag | undefined> {
+		const {
+			values: [tag],
+		} = await this.getTags({ filter: b => b.name === name });
+		return tag;
+	}
+
 	getTags(options?: { filter?: (t: GitTag) => boolean; sort?: boolean | TagSortOptions }) {
 		return this.container.git.getTags(this.path, options);
 	}
 
-	createWorktree(
+	async createWorktree(
 		uri: Uri,
 		options?: { commitish?: string; createBranch?: string; detach?: boolean; force?: boolean },
-	): Promise<void> {
-		return this.container.git.createWorktree(this.path, uri.fsPath, options);
+	): Promise<GitWorktree | undefined> {
+		await this.container.git.createWorktree(this.path, uri.fsPath, options);
+		const url = uri.toString();
+		return this.container.git.getWorktree(this.path, w => w.uri.toString() === url);
 	}
 
 	getWorktrees(): Promise<GitWorktree[]> {
@@ -696,6 +758,16 @@ export class Repository implements Disposable {
 	async hasUpstreamBranch(): Promise<boolean> {
 		const branch = await this.getBranch();
 		return branch?.upstream != null;
+	}
+
+	isMaybeWorktree(): boolean | undefined {
+		if (this._gitDir == null) return undefined;
+
+		return this._gitDir.commonUri != null;
+	}
+
+	async isWorktree(): Promise<boolean> {
+		return (await this.getGitDir())?.commonUri != null;
 	}
 
 	@log()
@@ -859,12 +931,12 @@ export class Repository implements Disposable {
 	}
 
 	@log({ singleLine: true })
-	resetCaches(...affects: ('branches' | 'remotes')[]) {
-		if (affects.length === 0 || affects.includes('branches')) {
+	private resetCaches(...caches: GitRepositoryCaches[]) {
+		if (caches.length === 0 || caches.includes('branches')) {
 			this._branch = undefined;
 		}
 
-		if (affects.length === 0 || affects.includes('remotes')) {
+		if (caches.length === 0 || caches.includes('remotes')) {
 			this._remotes = undefined;
 			this._remotesDisposable?.dispose();
 			this._remotesDisposable = undefined;
@@ -1135,4 +1207,8 @@ export class Repository implements Disposable {
 
 		setTimeout(() => this.fireChange(RepositoryChange.Unknown), 2500);
 	}
+}
+
+export function isRepository(repository: unknown): repository is Repository {
+	return repository instanceof Repository;
 }

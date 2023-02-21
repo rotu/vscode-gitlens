@@ -19,21 +19,26 @@ import {
 import type { CreatePullRequestActionContext } from '../../../api/gitlens';
 import { getAvatarUri } from '../../../avatars';
 import type {
+	CopyDeepLinkCommandArgs,
 	CopyMessageToClipboardCommandArgs,
 	CopyShaToClipboardCommandArgs,
-	OpenBranchOnRemoteCommandArgs,
-	OpenCommitOnRemoteCommandArgs,
+	OpenOnRemoteCommandArgs,
 	OpenPullRequestOnRemoteCommandArgs,
 	ShowCommitsInViewCommandArgs,
 } from '../../../commands';
 import { parseCommandContext } from '../../../commands/base';
-import { GitActions } from '../../../commands/gitCommands.actions';
 import type { Config } from '../../../configuration';
 import { configuration } from '../../../configuration';
 import { Commands, ContextKeys, CoreCommands, CoreGitCommands, GlyphChars } from '../../../constants';
 import type { Container } from '../../../container';
 import { getContext, onDidChangeContext } from '../../../context';
 import { PlusFeatures } from '../../../features';
+import * as BranchActions from '../../../git/actions/branch';
+import * as ContributorActions from '../../../git/actions/contributor';
+import * as RepoActions from '../../../git/actions/repository';
+import * as StashActions from '../../../git/actions/stash';
+import * as TagActions from '../../../git/actions/tag';
+import * as WorktreeActions from '../../../git/actions/worktree';
 import { GitSearchError } from '../../../git/errors';
 import { getBranchId, getBranchNameWithoutRemote, getRemoteNameFromBranchName } from '../../../git/models/branch';
 import { GitContributor } from '../../../git/models/contributor';
@@ -47,6 +52,7 @@ import type {
 } from '../../../git/models/reference';
 import { GitReference, GitRevision } from '../../../git/models/reference';
 import { getRemoteIconUri } from '../../../git/models/remote';
+import { RemoteResourceType } from '../../../git/models/remoteResource';
 import type { RepositoryChangeEvent, RepositoryFileSystemChangeEvent } from '../../../git/models/repository';
 import { Repository, RepositoryChange, RepositoryChangeComparisonMode } from '../../../git/models/repository';
 import type { GitSearch } from '../../../git/search';
@@ -140,6 +146,7 @@ import {
 	GetMissingRefsMetadataCommandType,
 	GetMoreRowsCommandType,
 	GraphRefMetadataTypes,
+	GraphScrollMarkerTypes,
 	SearchCommandType,
 	SearchOpenInViewCommandType,
 	supportedRefMetadataTypes,
@@ -167,6 +174,7 @@ const defaultGraphColumnsSettings: GraphColumnsSettings = {
 	author: { width: 130, isHidden: false },
 	datetime: { width: 130, isHidden: false },
 	sha: { width: 130, isHidden: false },
+	changes: { width: 130, isHidden: true },
 };
 
 export class GraphWebview extends WebviewBase<State> {
@@ -248,21 +256,33 @@ export class GraphWebview extends WebviewBase<State> {
 			registerCommand(
 				Commands.ShowInCommitGraph,
 				async (
-					args: ShowInCommitGraphCommandArgs | BranchNode | CommitNode | CommitFileNode | StashNode | TagNode,
+					args:
+						| ShowInCommitGraphCommandArgs
+						| Repository
+						| BranchNode
+						| CommitNode
+						| CommitFileNode
+						| StashNode
+						| TagNode,
 				) => {
-					this.repository = this.container.git.getRepository(args.ref.repoPath);
-					let id = args.ref.ref;
-					if (!GitRevision.isSha(id)) {
-						id = await this.container.git.resolveReference(args.ref.repoPath, id, undefined, {
-							force: true,
-						});
+					let id;
+					if (args instanceof Repository) {
+						this.repository = args;
+					} else {
+						this.repository = this.container.git.getRepository(args.ref.repoPath);
+						id = args.ref.ref;
+						if (!GitRevision.isSha(id)) {
+							id = await this.container.git.resolveReference(args.ref.repoPath, id, undefined, {
+								force: true,
+							});
+						}
+						this.setSelectedRows(id);
 					}
-					this.setSelectedRows(id);
 
 					const preserveFocus = 'preserveFocus' in args ? args.preserveFocus ?? false : false;
 					if (this._panel == null) {
 						void this.show({ preserveFocus: preserveFocus });
-					} else {
+					} else if (id) {
 						this._panel.reveal(this._panel.viewColumn ?? ViewColumn.Active, preserveFocus ?? false);
 						if (this._graph?.ids.has(id)) {
 							void this.notifyDidChangeSelection();
@@ -393,6 +413,13 @@ export class GraphWebview extends WebviewBase<State> {
 			registerCommand('gitlens.graph.columnDateTimeOff', () => this.toggleColumn('datetime', false)),
 			registerCommand('gitlens.graph.columnShaOn', () => this.toggleColumn('sha', true)),
 			registerCommand('gitlens.graph.columnShaOff', () => this.toggleColumn('sha', false)),
+			registerCommand('gitlens.graph.columnChangesOn', () => this.toggleColumn('changes', true)),
+			registerCommand('gitlens.graph.columnChangesOff', () => this.toggleColumn('changes', false)),
+
+			registerCommand('gitlens.graph.copyDeepLinkToBranch', this.copyDeepLinkToBranch, this),
+			registerCommand('gitlens.graph.copyDeepLinkToCommit', this.copyDeepLinkToCommit, this),
+			registerCommand('gitlens.graph.copyDeepLinkToRepo', this.copyDeepLinkToRepo, this),
+			registerCommand('gitlens.graph.copyDeepLinkToTag', this.copyDeepLinkToTag, this),
 		];
 	}
 
@@ -579,6 +606,8 @@ export class GraphWebview extends WebviewBase<State> {
 			configuration.changed(e, 'graph.dimMergeCommits') ||
 			configuration.changed(e, 'graph.highlightRowsOnRefHover') ||
 			configuration.changed(e, 'graph.scrollRowPadding') ||
+			configuration.changed(e, 'graph.scrollMarkers.enabled') ||
+			configuration.changed(e, 'graph.scrollMarkers.additionalTypes') ||
 			configuration.changed(e, 'graph.showGhostRefsOnRowHover') ||
 			configuration.changed(e, 'graph.pullRequests.enabled') ||
 			configuration.changed(e, 'graph.showRemoteNames') ||
@@ -679,18 +708,32 @@ export class GraphWebview extends WebviewBase<State> {
 
 	private onDoubleClick(e: DoubleClickedParams) {
 		if (e.type === 'ref' && e.ref.context) {
-			const item = typeof e.ref.context === 'string' ? JSON.parse(e.ref.context) : e.ref.context;
-			if (!('webview' in item)) {
-				item.webview = this.id;
-			}
+			let item = this.getGraphItemContext(e.ref.context);
 			if (isGraphItemRefContext(item)) {
+				if (e.metadata != null) {
+					item = this.getGraphItemContext(e.metadata.data.context);
+					if (e.metadata.type === 'upstream' && isGraphItemTypedContext(item, 'upstreamStatus')) {
+						const { ahead, behind, ref } = item.webviewItemValue;
+						if (behind > 0) {
+							return void RepoActions.pull(ref.repoPath, ref);
+						}
+						if (ahead > 0) {
+							return void RepoActions.push(ref.repoPath, false, ref);
+						}
+					} else if (e.metadata.type === 'pullRequest' && isGraphItemTypedContext(item, 'pullrequest')) {
+						return void this.openPullRequestOnRemote(item);
+					}
+
+					return;
+				}
+
 				const { ref } = item.webviewItemValue;
 				if (e.ref.refType === 'head' && e.ref.isCurrentHead) {
-					return GitActions.switchTo(ref.repoPath);
+					return RepoActions.switchTo(ref.repoPath);
 				}
 
 				// Override the default confirmation if the setting is unset
-				return GitActions.switchTo(
+				return RepoActions.switchTo(
 					ref.repoPath,
 					ref,
 					configuration.isUnset('gitCommands.skipConfirmations') ? true : undefined,
@@ -794,8 +837,8 @@ export class GraphWebview extends WebviewBase<State> {
 					const pr = await branch?.getAssociatedPullRequest();
 
 					if (pr == null) {
-						if (metadata.pullRequests === undefined || metadata.pullRequests?.length === 0) {
-							metadata.pullRequests = null;
+						if (metadata.pullRequest === undefined || metadata.pullRequest?.length === 0) {
+							metadata.pullRequest = null;
 						}
 
 						this._refsMetadata.set(id, metadata);
@@ -821,7 +864,7 @@ export class GraphWebview extends WebviewBase<State> {
 						}),
 					};
 
-					metadata.pullRequests = [prMetadata];
+					metadata.pullRequest = [prMetadata];
 
 					this._refsMetadata.set(id, metadata);
 					continue;
@@ -841,6 +884,15 @@ export class GraphWebview extends WebviewBase<State> {
 						owner: getRemoteNameFromBranchName(upstream.name),
 						ahead: branch.state.ahead,
 						behind: branch.state.behind,
+						context: serializeWebviewItemContext<GraphItemContext>({
+							webviewItem: 'gitlens:upstreamStatus',
+							webviewItemValue: {
+								type: 'upstreamStatus',
+								ref: GitReference.fromBranch(branch),
+								ahead: branch.state.ahead,
+								behind: branch.state.behind,
+							},
+						}),
 					};
 
 					metadata.upstream = upstreamMetadata;
@@ -1173,9 +1225,10 @@ export class GraphWebview extends WebviewBase<State> {
 		}
 
 		const columns = this.getColumns();
+		const columnSettings = this.getColumnSettings(columns);
 		return this.notify(DidChangeColumnsNotificationType, {
-			columns: this.getColumnSettings(columns),
-			context: this.getColumnHeaderContext(columns),
+			columns: columnSettings,
+			context: this.getColumnHeaderContext(columnSettings),
 		});
 	}
 
@@ -1316,6 +1369,7 @@ export class GraphWebview extends WebviewBase<State> {
 		[DidChangeSubscriptionNotificationType, this.notifyDidChangeSubscription],
 		[DidChangeWorkingTreeNotificationType, this.notifyDidChangeWorkingTree],
 		[DidChangeWindowFocusNotificationType, this.notifyDidChangeWindowFocus],
+		[DidFetchNotificationType, this.notifyDidFetch],
 	]);
 
 	private addPendingIpcNotification(type: IpcNotificationType<any>, msg?: IpcMessage) {
@@ -1578,13 +1632,11 @@ export class GraphWebview extends WebviewBase<State> {
 		return columnsSettings;
 	}
 
-	private getColumnHeaderContext(columns: Record<GraphColumnName, GraphColumnConfig> | undefined): string {
+	private getColumnHeaderContext(columnSettings: GraphColumnsSettings): string {
 		const hidden: string[] = [];
-		if (columns != null) {
-			for (const [name, cfg] of Object.entries(columns)) {
-				if (cfg.isHidden) {
-					hidden.push(name);
-				}
+		for (const [name, settings] of Object.entries(columnSettings)) {
+			if (settings.isHidden) {
+				hidden.push(name);
 			}
 		}
 		return serializeWebviewItemContext<GraphItemContext>({
@@ -1605,11 +1657,30 @@ export class GraphWebview extends WebviewBase<State> {
 			highlightRowsOnRefHover: configuration.get('graph.highlightRowsOnRefHover'),
 			minimap: configuration.get('graph.experimental.minimap.enabled'),
 			scrollRowPadding: configuration.get('graph.scrollRowPadding'),
+			enabledScrollMarkerTypes: this.getEnabledGraphScrollMarkers(),
 			showGhostRefsOnRowHover: configuration.get('graph.showGhostRefsOnRowHover'),
 			showRemoteNamesOnRefs: configuration.get('graph.showRemoteNames'),
 			idLength: configuration.get('advanced.abbreviatedShaLength'),
 		};
 		return config;
+	}
+
+	private getEnabledGraphScrollMarkers(): GraphScrollMarkerTypes[] {
+		const markersEnabled = configuration.get('graph.scrollMarkers.enabled');
+		if (!markersEnabled) return [];
+
+		const markers: GraphScrollMarkerTypes[] = [
+			GraphScrollMarkerTypes.Selection,
+			GraphScrollMarkerTypes.Highlights,
+			...(configuration.get('graph.scrollMarkers.additionalTypes') as unknown as GraphScrollMarkerTypes[]),
+		];
+
+		// Head and upstream are under the same setting, but separate markers in the component
+		if (markers.includes(GraphScrollMarkerTypes.Head)) {
+			markers.push(GraphScrollMarkerTypes.Upstream);
+		}
+
+		return markers;
 	}
 
 	private getEnabledRefMetadataTypes(): GraphRefMetadataType[] {
@@ -1641,6 +1712,15 @@ export class GraphWebview extends WebviewBase<State> {
 		}
 
 		return [access, visibility] as const;
+	}
+
+	private getGraphItemContext(context: unknown): unknown | undefined {
+		const item = typeof context === 'string' ? JSON.parse(context) : context;
+		// Add the `webview` prop to the context if its missing (e.g. when this context doesn't come through via the context menus)
+		if (item != null && !('webview' in item)) {
+			item.webview = this.id;
+		}
+		return item;
 	}
 
 	private async getWorkingTreeStats(): Promise<GraphWorkingTreeStats | undefined> {
@@ -1696,11 +1776,16 @@ export class GraphWebview extends WebviewBase<State> {
 		const ref =
 			this._selectedId == null || this._selectedId === GitRevision.uncommitted ? 'HEAD' : this._selectedId;
 
+		const columns = this.getColumns();
+		const columnSettings = this.getColumnSettings(columns);
+
 		const dataPromise = this.container.git.getCommitsForGraph(
 			this.repository.path,
 			this._panel!.webview.asWebviewUri.bind(this._panel!.webview),
 			{
-				include: { stats: configuration.get('graph.experimental.minimap.enabled') },
+				include: {
+					stats: configuration.get('graph.experimental.minimap.enabled') || !columnSettings.changes.isHidden,
+				},
 				limit: limit,
 				ref: ref,
 			},
@@ -1729,8 +1814,6 @@ export class GraphWebview extends WebviewBase<State> {
 			this.setSelectedRows(data.id);
 		}
 
-		const columns = this.getColumns();
-
 		const lastFetched = await this.repository.getLastFetched();
 		const branch = await this.repository.getBranch();
 
@@ -1756,10 +1839,10 @@ export class GraphWebview extends WebviewBase<State> {
 							hasMore: data.paging?.hasMore ?? false,
 					  }
 					: undefined,
-			columns: this.getColumnSettings(columns),
+			columns: columnSettings,
 			config: this.getComponentConfig(),
 			context: {
-				header: this.getColumnHeaderContext(columns),
+				header: this.getColumnHeaderContext(columnSettings),
 			},
 			excludeRefs: data != null ? this.getExcludedRefs(data) ?? {} : {},
 			excludeTypes: this.getExcludedTypes(data) ?? {},
@@ -1913,18 +1996,21 @@ export class GraphWebview extends WebviewBase<State> {
 	}
 
 	@debug()
-	private fetch() {
-		void GitActions.fetch(this.repository);
+	private fetch(item?: GraphItemContext) {
+		const ref = this.getGraphItemRef(item, 'branch');
+		void RepoActions.fetch(this.repository, ref);
 	}
 
 	@debug()
-	private pull() {
-		void GitActions.pull(this.repository);
+	private pull(item?: GraphItemContext) {
+		const ref = this.getGraphItemRef(item, 'branch');
+		void RepoActions.pull(this.repository, ref);
 	}
 
 	@debug()
-	private push() {
-		void GitActions.push(this.repository);
+	private push(item?: GraphItemContext) {
+		const ref = this.getGraphItemRef(item);
+		void RepoActions.push(this.repository, undefined, ref);
 	}
 
 	@debug()
@@ -1932,14 +2018,14 @@ export class GraphWebview extends WebviewBase<State> {
 		const ref = this.getGraphItemRef(item);
 		if (ref == null) return Promise.resolve();
 
-		return GitActions.Branch.create(ref.repoPath, ref);
+		return BranchActions.create(ref.repoPath, ref);
 	}
 
 	@debug()
 	private deleteBranch(item?: GraphItemContext) {
 		if (isGraphItemRefContext(item, 'branch')) {
 			const { ref } = item.webviewItemValue;
-			return GitActions.Branch.remove(ref.repoPath, ref);
+			return BranchActions.remove(ref.repoPath, ref);
 		}
 
 		return Promise.resolve();
@@ -1949,7 +2035,7 @@ export class GraphWebview extends WebviewBase<State> {
 	private mergeBranchInto(item?: GraphItemContext) {
 		if (isGraphItemRefContext(item, 'branch')) {
 			const { ref } = item.webviewItemValue;
-			return GitActions.merge(ref.repoPath, ref);
+			return RepoActions.merge(ref.repoPath, ref);
 		}
 
 		return Promise.resolve();
@@ -1959,8 +2045,12 @@ export class GraphWebview extends WebviewBase<State> {
 	private openBranchOnRemote(item?: GraphItemContext, clipboard?: boolean) {
 		if (isGraphItemRefContext(item, 'branch')) {
 			const { ref } = item.webviewItemValue;
-			return executeCommand<OpenBranchOnRemoteCommandArgs>(Commands.OpenBranchOnRemote, {
-				branch: ref.name,
+			return executeCommand<OpenOnRemoteCommandArgs>(Commands.OpenOnRemote, {
+				repoPath: ref.repoPath,
+				resource: {
+					type: RemoteResourceType.Branch,
+					branch: ref.name,
+				},
 				remote: ref.upstream?.name,
 				clipboard: clipboard,
 			});
@@ -1974,7 +2064,7 @@ export class GraphWebview extends WebviewBase<State> {
 		const ref = this.getGraphItemRef(item);
 		if (ref == null) return Promise.resolve();
 
-		return GitActions.rebase(ref.repoPath, ref);
+		return RepoActions.rebase(ref.repoPath, ref);
 	}
 
 	@debug()
@@ -1982,7 +2072,7 @@ export class GraphWebview extends WebviewBase<State> {
 		if (isGraphItemRefContext(item, 'branch')) {
 			const { ref } = item.webviewItemValue;
 			if (ref.upstream != null) {
-				return GitActions.rebase(
+				return RepoActions.rebase(
 					ref.repoPath,
 					GitReference.create(ref.upstream.name, ref.repoPath, {
 						refType: 'branch',
@@ -2000,7 +2090,7 @@ export class GraphWebview extends WebviewBase<State> {
 	private renameBranch(item?: GraphItemContext) {
 		if (isGraphItemRefContext(item, 'branch')) {
 			const { ref } = item.webviewItemValue;
-			return GitActions.Branch.rename(ref.repoPath, ref);
+			return BranchActions.rename(ref.repoPath, ref);
 		}
 
 		return Promise.resolve();
@@ -2011,7 +2101,7 @@ export class GraphWebview extends WebviewBase<State> {
 		const ref = this.getGraphItemRef(item, 'revision');
 		if (ref == null) return Promise.resolve();
 
-		return GitActions.cherryPick(ref.repoPath, ref);
+		return RepoActions.cherryPick(ref.repoPath, ref);
 	}
 
 	@debug()
@@ -2083,10 +2173,57 @@ export class GraphWebview extends WebviewBase<State> {
 		const ref = this.getGraphItemRef(item, 'revision');
 		if (ref == null) return Promise.resolve();
 
-		return executeCommand<OpenCommitOnRemoteCommandArgs>(Commands.OpenCommitOnRemote, {
-			sha: ref.ref,
+		return executeCommand<OpenOnRemoteCommandArgs>(Commands.OpenOnRemote, {
+			repoPath: ref.repoPath,
+			resource: {
+				type: RemoteResourceType.Commit,
+				sha: ref.ref,
+			},
 			clipboard: clipboard,
 		});
+	}
+
+	@debug()
+	private copyDeepLinkToBranch(item?: GraphItemContext) {
+		if (isGraphItemRefContext(item, 'branch')) {
+			const { ref } = item.webviewItemValue;
+			return executeCommand<CopyDeepLinkCommandArgs>(Commands.CopyDeepLinkToBranch, { refOrRepoPath: ref });
+		}
+
+		return Promise.resolve();
+	}
+
+	@debug()
+	private copyDeepLinkToCommit(item?: GraphItemContext) {
+		const ref = this.getGraphItemRef(item, 'revision');
+		if (ref == null) return Promise.resolve();
+
+		return executeCommand<CopyDeepLinkCommandArgs>(Commands.CopyDeepLinkToCommit, { refOrRepoPath: ref });
+	}
+
+	@debug()
+	private copyDeepLinkToRepo(item?: GraphItemContext) {
+		if (isGraphItemRefContext(item, 'branch')) {
+			const { ref } = item.webviewItemValue;
+			if (!ref.remote) return Promise.resolve();
+
+			return executeCommand<CopyDeepLinkCommandArgs>(Commands.CopyDeepLinkToRepo, {
+				refOrRepoPath: ref.repoPath,
+				remote: getRemoteNameFromBranchName(ref.name),
+			});
+		}
+
+		return Promise.resolve();
+	}
+
+	@debug()
+	private copyDeepLinkToTag(item?: GraphItemContext) {
+		if (isGraphItemRefContext(item, 'tag')) {
+			const { ref } = item.webviewItemValue;
+			return executeCommand<CopyDeepLinkCommandArgs>(Commands.CopyDeepLinkToTag, { refOrRepoPath: ref });
+		}
+
+		return Promise.resolve();
 	}
 
 	@debug()
@@ -2094,7 +2231,7 @@ export class GraphWebview extends WebviewBase<State> {
 		const ref = this.getGraphItemRef(item, 'revision');
 		if (ref == null) return Promise.resolve();
 
-		return GitActions.reset(
+		return RepoActions.reset(
 			ref.repoPath,
 			GitReference.create(`${ref.ref}^`, ref.repoPath, {
 				refType: 'revision',
@@ -2109,7 +2246,7 @@ export class GraphWebview extends WebviewBase<State> {
 		const ref = this.getGraphItemRef(item, 'revision');
 		if (ref == null) return Promise.resolve();
 
-		return GitActions.reset(ref.repoPath, ref);
+		return RepoActions.reset(ref.repoPath, ref);
 	}
 
 	@debug()
@@ -2117,7 +2254,7 @@ export class GraphWebview extends WebviewBase<State> {
 		const ref = this.getGraphItemRef(item, 'revision');
 		if (ref == null) return Promise.resolve();
 
-		return GitActions.revert(ref.repoPath, ref);
+		return RepoActions.revert(ref.repoPath, ref);
 	}
 
 	@debug()
@@ -2125,7 +2262,7 @@ export class GraphWebview extends WebviewBase<State> {
 		const ref = this.getGraphItemRef(item);
 		if (ref == null) return Promise.resolve();
 
-		return GitActions.switchTo(ref.repoPath, ref);
+		return RepoActions.switchTo(ref.repoPath, ref);
 	}
 
 	@debug()
@@ -2162,9 +2299,9 @@ export class GraphWebview extends WebviewBase<State> {
 	@debug()
 	private switchToAnother(item?: GraphItemContext | unknown) {
 		const ref = this.getGraphItemRef(item);
-		if (ref == null) return GitActions.switchTo(this.repository?.path);
+		if (ref == null) return RepoActions.switchTo(this.repository?.path);
 
-		return GitActions.switchTo(ref.repoPath);
+		return RepoActions.switchTo(ref.repoPath);
 	}
 
 	@debug()
@@ -2194,7 +2331,7 @@ export class GraphWebview extends WebviewBase<State> {
 		const ref = this.getGraphItemRef(item);
 		if (ref == null) return Promise.resolve();
 
-		return GitActions.Stash.push(ref.repoPath);
+		return StashActions.push(ref.repoPath);
 	}
 
 	@debug()
@@ -2202,7 +2339,7 @@ export class GraphWebview extends WebviewBase<State> {
 		const ref = this.getGraphItemRef(item, 'stash');
 		if (ref == null) return Promise.resolve();
 
-		return GitActions.Stash.apply(ref.repoPath, ref);
+		return StashActions.apply(ref.repoPath, ref);
 	}
 
 	@debug()
@@ -2210,7 +2347,7 @@ export class GraphWebview extends WebviewBase<State> {
 		const ref = this.getGraphItemRef(item, 'stash');
 		if (ref == null) return Promise.resolve();
 
-		return GitActions.Stash.drop(ref.repoPath, ref);
+		return StashActions.drop(ref.repoPath, ref);
 	}
 
 	@debug()
@@ -2218,14 +2355,14 @@ export class GraphWebview extends WebviewBase<State> {
 		const ref = this.getGraphItemRef(item);
 		if (ref == null) return Promise.resolve();
 
-		return GitActions.Tag.create(ref.repoPath, ref);
+		return TagActions.create(ref.repoPath, ref);
 	}
 
 	@debug()
 	private deleteTag(item?: GraphItemContext) {
 		if (isGraphItemRefContext(item, 'tag')) {
 			const { ref } = item.webviewItemValue;
-			return GitActions.Tag.remove(ref.repoPath, ref);
+			return TagActions.remove(ref.repoPath, ref);
 		}
 
 		return Promise.resolve();
@@ -2236,7 +2373,7 @@ export class GraphWebview extends WebviewBase<State> {
 		const ref = this.getGraphItemRef(item);
 		if (ref == null) return Promise.resolve();
 
-		return GitActions.Worktree.create(ref.repoPath, undefined, ref);
+		return WorktreeActions.create(ref.repoPath, undefined, ref);
 	}
 
 	@debug()
@@ -2343,7 +2480,7 @@ export class GraphWebview extends WebviewBase<State> {
 	private addAuthor(item?: GraphItemContext) {
 		if (isGraphItemTypedContext(item, 'contributor')) {
 			const { repoPath, name, email, current } = item.webviewItemValue;
-			return GitActions.Contributor.addAuthors(
+			return ContributorActions.addAuthors(
 				repoPath,
 				new GitContributor(repoPath, name, email, 0, undefined, current),
 			);
@@ -2366,9 +2503,17 @@ export class GraphWebview extends WebviewBase<State> {
 		await this.container.storage.storeWorkspace('graph:columns', columns);
 
 		void this.notifyDidChangeColumns();
+
+		if (name === 'changes' && !column.isHidden && !this._graph?.includes?.stats) {
+			this.updateState();
+		}
 	}
 
 	private getGraphItemRef(item?: GraphItemContext | unknown | undefined): GitReference | undefined;
+	private getGraphItemRef(
+		item: GraphItemContext | unknown | undefined,
+		refType: 'branch',
+	): GitBranchReference | undefined;
 	private getGraphItemRef(
 		item: GraphItemContext | unknown | undefined,
 		refType: 'revision',
@@ -2377,9 +2522,10 @@ export class GraphWebview extends WebviewBase<State> {
 		item: GraphItemContext | unknown | undefined,
 		refType: 'stash',
 	): GitStashReference | undefined;
+	private getGraphItemRef(item: GraphItemContext | unknown | undefined, refType: 'tag'): GitTagReference | undefined;
 	private getGraphItemRef(
 		item?: GraphItemContext | unknown,
-		refType?: 'revision' | 'stash',
+		refType?: 'branch' | 'revision' | 'stash' | 'tag',
 	): GitReference | undefined {
 		if (item == null) {
 			const ref = this.activeSelection;
@@ -2387,10 +2533,16 @@ export class GraphWebview extends WebviewBase<State> {
 		}
 
 		switch (refType) {
+			case 'branch':
+				return isGraphItemRefContext(item, 'branch') || isGraphItemTypedContext(item, 'upstreamStatus')
+					? item.webviewItemValue.ref
+					: undefined;
 			case 'revision':
 				return isGraphItemRefContext(item, 'revision') ? item.webviewItemValue.ref : undefined;
 			case 'stash':
 				return isGraphItemRefContext(item, 'stash') ? item.webviewItemValue.ref : undefined;
+			case 'tag':
+				return isGraphItemRefContext(item, 'tag') ? item.webviewItemValue.ref : undefined;
 			default:
 				return isGraphItemRefContext(item) ? item.webviewItemValue.ref : undefined;
 		}
@@ -2429,7 +2581,10 @@ export interface GraphItemRefGroupContextValue {
 }
 
 export type GraphItemTypedContext<T = GraphItemTypedContextValue> = WebviewItemContext<T>;
-export type GraphItemTypedContextValue = GraphContributorContextValue | GraphPullRequestContextValue;
+export type GraphItemTypedContextValue =
+	| GraphContributorContextValue
+	| GraphPullRequestContextValue
+	| GraphUpstreamStatusContextValue;
 
 export type GraphColumnsContextValue = string;
 
@@ -2467,6 +2622,13 @@ export interface GraphTagContextValue {
 	ref: GitTagReference;
 }
 
+export interface GraphUpstreamStatusContextValue {
+	type: 'upstreamStatus';
+	ref: GitBranchReference;
+	ahead: number;
+	behind: number;
+}
+
 function isGraphItemContext(item: unknown): item is GraphItemContext {
 	if (item == null) return false;
 
@@ -2487,6 +2649,10 @@ function isGraphItemTypedContext(
 	item: unknown,
 	type: 'pullrequest',
 ): item is GraphItemTypedContext<GraphPullRequestContextValue>;
+function isGraphItemTypedContext(
+	item: unknown,
+	type: 'upstreamStatus',
+): item is GraphItemTypedContext<GraphUpstreamStatusContextValue>;
 function isGraphItemTypedContext(
 	item: unknown,
 	type: GraphItemTypedContextValue['type'],

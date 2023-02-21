@@ -8,7 +8,6 @@ import type {
 	GraphRefOptData,
 	GraphRow,
 	GraphZoneType,
-	Head,
 	OnFormatCommitDateTime,
 } from '@gitkraken/gitkraken-components';
 import GraphContainer, { GRAPH_ZONE_TYPE, REF_ZONE_TYPE } from '@gitkraken/gitkraken-components';
@@ -31,6 +30,7 @@ import type {
 	GraphExcludedRef,
 	GraphExcludeTypes,
 	GraphMissingRefsMetadata,
+	GraphRefMetadataItem,
 	GraphRepository,
 	GraphSearchResults,
 	GraphSearchResultsError,
@@ -71,6 +71,7 @@ import type {
 	GraphMinimapSearchResultMarker,
 	GraphMinimapStats,
 	GraphMinimap as GraphMinimapType,
+	StashMarker,
 } from './minimap/minimap';
 import { GraphMinimap } from './minimap/react';
 
@@ -81,7 +82,7 @@ export interface GraphWrapperProps {
 	onChooseRepository?: () => void;
 	onColumnsChange?: (colsSettings: GraphColumnsConfig) => void;
 	onDimMergeCommits?: (dim: boolean) => void;
-	onDoubleClickRef?: (ref: GraphRef) => void;
+	onDoubleClickRef?: (ref: GraphRef, metadata?: GraphRefMetadataItem) => void;
 	onDoubleClickRow?: (row: GraphRow, preserveFocus?: boolean) => void;
 	onMissingAvatars?: (emails: { [email: string]: string }) => void;
 	onMissingRefsMetadata?: (metadata: GraphMissingRefsMetadata) => void;
@@ -366,10 +367,10 @@ export function GraphWrapper({
 		let day;
 		let prevDay;
 
-		let head: Head | undefined;
 		let markers;
 		let headMarkers;
 		let remoteMarkers;
+		let stashMarker: StashMarker | undefined;
 		let tagMarkers;
 		let row: GraphRow;
 		let stat;
@@ -397,7 +398,6 @@ export function GraphWrapper({
 				// eslint-disable-next-line no-loop-func
 				headMarkers = row.heads.map<GraphMinimapMarker>(h => {
 					if (h.isCurrentHead) {
-						head = h;
 						rankedShas.head = row.sha;
 					}
 
@@ -422,7 +422,7 @@ export function GraphWrapper({
 				// eslint-disable-next-line no-loop-func
 				remoteMarkers = row.remotes.map<GraphMinimapMarker>(r => {
 					let current = false;
-					if (r.name === head?.name) {
+					if (r.current) {
 						rankedShas.remote = row.sha;
 						current = true;
 					}
@@ -439,6 +439,16 @@ export function GraphWrapper({
 					markersByDay.set(day, remoteMarkers);
 				} else {
 					markers.push(...remoteMarkers);
+				}
+			}
+
+			if (row.type === 'stash-node') {
+				stashMarker = { type: 'stash', name: row.message };
+				markers = markersByDay.get(day);
+				if (markers == null) {
+					markersByDay.set(day, [stashMarker]);
+				} else {
+					markers.push(stashMarker);
 				}
 			}
 
@@ -835,9 +845,10 @@ export function GraphWrapper({
 		_event: React.MouseEvent<HTMLButtonElement, globalThis.MouseEvent>,
 		refGroup: GraphRefGroup,
 		_row: GraphRow,
+		metadata?: GraphRefMetadataItem,
 	) => {
 		if (refGroup.length > 0) {
-			onDoubleClickRef?.(refGroup[0]);
+			onDoubleClickRef?.(refGroup[0], metadata);
 		}
 	};
 
@@ -1223,8 +1234,8 @@ export function GraphWrapper({
 							<button
 								type="button"
 								className="action-button action-button--narrow"
-								title="Toggle Minimap (experimental)"
-								aria-label="Toggle Minimap (experimental)"
+								title="Toggle Minimap (Experimental)"
+								aria-label="Toggle Minimap (Experimental)"
 								onClick={handleOnToggleMinimap}
 							>
 								<span className="codicon codicon-graph-line action-button__icon"></span>
@@ -1263,6 +1274,7 @@ export function GraphWrapper({
 							cssVariables={styleProps?.cssVariables}
 							dimMergeCommits={graphConfig?.dimMergeCommits}
 							enabledRefMetadataTypes={graphConfig?.enabledRefMetadataTypes}
+							enabledScrollMarkerTypes={graphConfig?.enabledScrollMarkerTypes}
 							enableMultiSelection={graphConfig?.enableMultiSelection}
 							excludeRefsById={excludeRefsById}
 							excludeByType={excludeTypes}

@@ -1,12 +1,13 @@
 import type { Disposable, InputBox, QuickInputButton, QuickPick, QuickPickItem } from 'vscode';
-import { QuickInputButtons, window } from 'vscode';
+import { InputBoxValidationSeverity, QuickInputButtons, window } from 'vscode';
 import { configuration } from '../configuration';
 import { Commands } from '../constants';
 import { Container } from '../container';
 import type { KeyMapping } from '../keyboard';
-import { Directive, DirectiveQuickPickItem } from '../quickpicks/items/directive';
+import { Directive, isDirective, isDirectiveQuickPickItem } from '../quickpicks/items/directive';
 import { command } from '../system/command';
 import { log } from '../system/decorators/log';
+import type { Deferred } from '../system/promise';
 import { isPromise } from '../system/promise';
 import type { CommandContext } from './base';
 import { Command } from './base';
@@ -19,6 +20,7 @@ import type { MergeGitCommandArgs } from './git/merge';
 import type { PullGitCommandArgs } from './git/pull';
 import type { PushGitCommandArgs } from './git/push';
 import type { RebaseGitCommandArgs } from './git/rebase';
+import type { RemoteGitCommandArgs } from './git/remote';
 import type { ResetGitCommandArgs } from './git/reset';
 import type { RevertGitCommandArgs } from './git/revert';
 import type { SearchGitCommandArgs } from './git/search';
@@ -29,8 +31,8 @@ import type { SwitchGitCommandArgs } from './git/switch';
 import type { TagGitCommandArgs } from './git/tag';
 import type { WorktreeGitCommandArgs } from './git/worktree';
 import { PickCommandStep } from './gitCommands.utils';
-import type { CustomStep, QuickInputStep, QuickPickStep, StepSelection } from './quickCommand';
-import { isCustomStep, isQuickInputStep, isQuickPickStep, QuickCommand, StepResult } from './quickCommand';
+import type { CustomStep, QuickCommand, QuickInputStep, QuickPickStep, StepSelection } from './quickCommand';
+import { isCustomStep, isQuickCommand, isQuickInputStep, isQuickPickStep, StepResultBreak } from './quickCommand';
 import { QuickCommandButtons, ToggleQuickInputButton } from './quickCommand.buttons';
 
 const sanitizeLabel = /\$\(.+?\)|\s/g;
@@ -46,6 +48,7 @@ export type GitCommandsCommandArgs =
 	| PullGitCommandArgs
 	| PushGitCommandArgs
 	| RebaseGitCommandArgs
+	| RemoteGitCommandArgs
 	| ResetGitCommandArgs
 	| RevertGitCommandArgs
 	| SearchGitCommandArgs
@@ -55,6 +58,8 @@ export type GitCommandsCommandArgs =
 	| SwitchGitCommandArgs
 	| TagGitCommandArgs
 	| WorktreeGitCommandArgs;
+
+export type GitCommandsCommandArgsWithCompletion = GitCommandsCommandArgs & { completion?: Deferred<void> };
 
 @command()
 export class GitCommandsCommand extends Command {
@@ -75,7 +80,7 @@ export class GitCommandsCommand extends Command {
 		]);
 	}
 
-	protected override preExecute(context: CommandContext, args?: GitCommandsCommandArgs) {
+	protected override preExecute(context: CommandContext, args?: GitCommandsCommandArgsWithCompletion) {
 		switch (context.command) {
 			case Commands.GitCommandsBranch:
 				args = { command: 'branch' };
@@ -110,7 +115,7 @@ export class GitCommandsCommand extends Command {
 	}
 
 	@log({ args: false, scoped: true, singleLine: true, timed: false })
-	async execute(args?: GitCommandsCommandArgs) {
+	async execute(args?: GitCommandsCommandArgsWithCompletion) {
 		const commandsStep = new PickCommandStep(this.container, args);
 
 		const command = args?.command != null ? commandsStep.find(args.command) : undefined;
@@ -170,6 +175,8 @@ export class GitCommandsCommand extends Command {
 
 			break;
 		}
+
+		args?.completion?.fulfill();
 	}
 
 	private async showLoadingIfNeeded(
@@ -286,9 +293,9 @@ export class GitCommandsCommand extends Command {
 
 	private async showCustomStep(step: CustomStep, commandsStep: PickCommandStep) {
 		const result = await step.show(step);
-		if (result === StepResult.Break) return undefined;
+		if (result === StepResultBreak) return undefined;
 
-		if (Directive.is(result)) {
+		if (isDirective(result)) {
 			switch (result) {
 				case Directive.Back:
 					return (await commandsStep?.command?.previous()) ?? commandsStep;
@@ -322,7 +329,8 @@ export class GitCommandsCommand extends Command {
 		const disposables: Disposable[] = [];
 
 		try {
-			return await new Promise<QuickPickStep | QuickInputStep | undefined>(resolve => {
+			// eslint-disable-next-line no-async-promise-executor
+			return await new Promise<QuickPickStep | QuickInputStep | undefined>(async resolve => {
 				const goBack = async () => {
 					input.value = '';
 					if (commandsStep.command != null) {
@@ -407,6 +415,13 @@ export class GitCommandsCommand extends Command {
 				input.prompt = step.prompt;
 				if (step.value != null) {
 					input.value = step.value;
+
+					if (step.validate != null) {
+						const [valid, message] = await step.validate(step.value);
+						if (!valid && message != null) {
+							input.validationMessage = { severity: InputBoxValidationSeverity.Error, message: message };
+						}
+					}
 				}
 
 				// If we are starting over clear the previously active command
@@ -467,7 +482,7 @@ export class GitCommandsCommand extends Command {
 							activeIndex = quickpick.items.indexOf(active);
 
 							// If the active item is the "Load more" directive, then select the previous item
-							if (DirectiveQuickPickItem.is(active)) {
+							if (isDirectiveQuickPickItem(active)) {
 								activeIndex--;
 							}
 						}
@@ -523,7 +538,7 @@ export class GitCommandsCommand extends Command {
 							let activeCommand;
 							if (commandsStep.command == null && quickpick.activeItems.length !== 0) {
 								const active = quickpick.activeItems[0];
-								if (QuickCommand.is(active)) {
+								if (isQuickCommand(active)) {
 									activeCommand = active;
 								}
 							}
@@ -642,7 +657,7 @@ export class GitCommandsCommand extends Command {
 						if (commandsStep.command != null || quickpick.activeItems.length === 0) return;
 
 						const command = quickpick.activeItems[0];
-						if (!QuickCommand.is(command)) return;
+						if (!isQuickCommand(command)) return;
 
 						quickpick.buttons = this.getButtons(undefined, command);
 					}),
@@ -690,7 +705,7 @@ export class GitCommandsCommand extends Command {
 
 						if (items.length === 1) {
 							const [item] = items;
-							if (DirectiveQuickPickItem.is(item)) {
+							if (isDirectiveQuickPickItem(item)) {
 								switch (item.directive) {
 									case Directive.Cancel:
 										resolve(undefined);
@@ -729,7 +744,7 @@ export class GitCommandsCommand extends Command {
 
 						if (commandsStep.command == null) {
 							const [command] = items;
-							if (!QuickCommand.is(command)) return;
+							if (!isQuickCommand(command)) return;
 
 							commandsStep.setCommand(command, this.startedWith);
 						}

@@ -1,7 +1,8 @@
 import type { TextEditor } from 'vscode';
-import { Uri, window } from 'vscode';
+import { Uri } from 'vscode';
 import { Commands } from '../constants';
 import type { Container } from '../container';
+import { executeGitCommand } from '../git/actions';
 import { GitUri } from '../git/gitUri';
 import type { GitCommit, GitStashCommit } from '../git/models/commit';
 import { isCommit } from '../git/models/commit';
@@ -16,7 +17,6 @@ import {
 import { command } from '../system/command';
 import type { CommandContext } from './base';
 import { ActiveEditorCachedCommand, getCommandUri, isCommandContextViewNodeHasCommit } from './base';
-import { executeGitCommand } from './gitCommands.actions';
 
 export interface ShowQuickCommitFileCommandArgs {
 	sha?: string;
@@ -100,7 +100,7 @@ export class ShowQuickCommitFileCommand extends ActiveEditorCachedCommand {
 				args.commit = blame.commit;
 			} catch (ex) {
 				Logger.error(ex, 'ShowQuickCommitFileDetailsCommand', `getBlameForLine(${blameLine})`);
-				void window.showErrorMessage('Unable to show commit file details. See output channel for more details');
+				void showGenericErrorMessage('Unable to show commit file details');
 
 				return;
 			}

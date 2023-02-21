@@ -5,8 +5,9 @@ import { getRemoteNameFromBranchName } from '../../git/models/branch';
 import type { GitBranchReference } from '../../git/models/reference';
 import { GitReference } from '../../git/models/reference';
 import type { Repository } from '../../git/models/repository';
-import { Directive, DirectiveQuickPickItem } from '../../quickpicks/items/directive';
-import { FlagsQuickPickItem } from '../../quickpicks/items/flags';
+import { createDirectiveQuickPickItem, Directive } from '../../quickpicks/items/directive';
+import type { FlagsQuickPickItem } from '../../quickpicks/items/flags';
+import { createFlagsQuickPickItem } from '../../quickpicks/items/flags';
 import { isStringArray } from '../../system/array';
 import { fromNow } from '../../system/date';
 import { pad, pluralize } from '../../system/string';
@@ -21,11 +22,13 @@ import type {
 } from '../quickCommand';
 import {
 	appendReposToTitle,
+	canPickStepContinue,
+	endSteps,
 	pickRepositoriesStep,
 	pickRepositoryStep,
 	QuickCommand,
 	QuickCommandButtons,
-	StepResult,
+	StepResultBreak,
 } from '../quickCommand';
 
 interface Context {
@@ -119,7 +122,7 @@ export class PushGitCommand extends QuickCommand<State> {
 						context,
 					);
 					// Always break on the first step (so we will go back)
-					if (result === StepResult.Break) break;
+					if (result === StepResultBreak) break;
 
 					state.repos = [result];
 				} else {
@@ -129,7 +132,7 @@ export class PushGitCommand extends QuickCommand<State> {
 						{ skipIfPossible: state.counter >= 1 },
 					);
 					// Always break on the first step (so we will go back)
-					if (result === StepResult.Break) break;
+					if (result === StepResultBreak) break;
 
 					state.repos = result;
 				}
@@ -137,7 +140,7 @@ export class PushGitCommand extends QuickCommand<State> {
 
 			if (this.confirm(state.confirm)) {
 				const result = yield* this.confirmStep(state as PushStepState, context);
-				if (result === StepResult.Break) {
+				if (result === StepResultBreak) {
 					// If we skipped the previous step, make sure we back up past it
 					if (skippedStepOne) {
 						state.counter--;
@@ -149,11 +152,11 @@ export class PushGitCommand extends QuickCommand<State> {
 				state.flags = result;
 			}
 
-			QuickCommand.endSteps(state);
+			endSteps(state);
 			void this.execute(state as State<Repository[]>);
 		}
 
-		return state.counter < 0 ? StepResult.Break : undefined;
+		return state.counter < 0 ? StepResultBreak : undefined;
 	}
 
 	private async *confirmStep(state: PushStepState, context: Context): AsyncStepResultGenerator<Flags[]> {
@@ -163,11 +166,11 @@ export class PushGitCommand extends QuickCommand<State> {
 
 		if (state.repos.length > 1) {
 			step = this.createConfirmStep(appendReposToTitle(`Confirm ${context.title}`, state, context), [
-				FlagsQuickPickItem.create<Flags>(state.flags, [], {
+				createFlagsQuickPickItem<Flags>(state.flags, [], {
 					label: this.title,
 					detail: `Will push ${state.repos.length} repositories`,
 				}),
-				FlagsQuickPickItem.create<Flags>(state.flags, ['--force'], {
+				createFlagsQuickPickItem<Flags>(state.flags, ['--force'], {
 					label: `Force ${this.title}${useForceWithLease ? ' (with lease)' : ''}`,
 					description: `--force${useForceWithLease ? '-with-lease' : ''}`,
 					detail: `Will force push${useForceWithLease ? ' (with lease)' : ''} ${
@@ -185,7 +188,7 @@ export class PushGitCommand extends QuickCommand<State> {
 					step = this.createConfirmStep(
 						appendReposToTitle(`Confirm ${context.title}`, state, context),
 						[],
-						DirectiveQuickPickItem.create(Directive.Cancel, true, {
+						createDirectiveQuickPickItem(Directive.Cancel, true, {
 							label: `Cancel ${this.title}`,
 							detail: 'Cannot push remote branch',
 						}),
@@ -196,7 +199,7 @@ export class PushGitCommand extends QuickCommand<State> {
 					if (branch != null && branch?.upstream == null) {
 						for (const remote of await repo.getRemotes()) {
 							items.push(
-								FlagsQuickPickItem.create<Flags>(
+								createFlagsQuickPickItem<Flags>(
 									state.flags,
 									['--set-upstream', remote.name, branch.name],
 									{
@@ -218,7 +221,7 @@ export class PushGitCommand extends QuickCommand<State> {
 							step = this.createConfirmStep(
 								appendReposToTitle('Confirm Publish', state, context),
 								[],
-								DirectiveQuickPickItem.create(Directive.Cancel, true, {
+								createDirectiveQuickPickItem(Directive.Cancel, true, {
 									label: 'Cancel Publish',
 									detail: 'Cannot publish; No remotes found',
 								}),
@@ -229,7 +232,7 @@ export class PushGitCommand extends QuickCommand<State> {
 						step = this.createConfirmStep(
 							appendReposToTitle(`Confirm ${context.title}`, state, context),
 							[
-								FlagsQuickPickItem.create<Flags>(state.flags, ['--force'], {
+								createFlagsQuickPickItem<Flags>(state.flags, ['--force'], {
 									label: `Force ${this.title}${useForceWithLease ? ' (with lease)' : ''}`,
 									description: `--force${useForceWithLease ? '-with-lease' : ''}`,
 									detail: `Will force push${useForceWithLease ? ' (with lease)' : ''} ${
@@ -243,7 +246,7 @@ export class PushGitCommand extends QuickCommand<State> {
 									}`,
 								}),
 							],
-							DirectiveQuickPickItem.create(Directive.Cancel, true, {
+							createDirectiveQuickPickItem(Directive.Cancel, true, {
 								label: `Cancel ${this.title}`,
 								detail: `Cannot push; ${GitReference.toString(
 									branch,
@@ -252,7 +255,7 @@ export class PushGitCommand extends QuickCommand<State> {
 						);
 					} else if (branch != null && branch?.state.ahead > 0) {
 						step = this.createConfirmStep(appendReposToTitle(`Confirm ${context.title}`, state, context), [
-							FlagsQuickPickItem.create<Flags>(state.flags, [branch.getRemoteName()!], {
+							createFlagsQuickPickItem<Flags>(state.flags, [branch.getRemoteName()!], {
 								label: this.title,
 								detail: `Will push ${pluralize(
 									'commit',
@@ -264,7 +267,7 @@ export class PushGitCommand extends QuickCommand<State> {
 						step = this.createConfirmStep(
 							appendReposToTitle(`Confirm ${context.title}`, state, context),
 							[],
-							DirectiveQuickPickItem.create(Directive.Cancel, true, {
+							createDirectiveQuickPickItem(Directive.Cancel, true, {
 								label: `Cancel ${this.title}`,
 								detail: 'No commits found to push',
 							}),
@@ -288,7 +291,7 @@ export class PushGitCommand extends QuickCommand<State> {
 
 						for (const remote of await repo.getRemotes()) {
 							items.push(
-								FlagsQuickPickItem.create<Flags>(
+								createFlagsQuickPickItem<Flags>(
 									state.flags,
 									['--set-upstream', remote.name, status.branch],
 									{
@@ -311,7 +314,7 @@ export class PushGitCommand extends QuickCommand<State> {
 						step = this.createConfirmStep(
 							appendReposToTitle('Confirm Publish', state, context),
 							[],
-							DirectiveQuickPickItem.create(Directive.Cancel, true, {
+							createDirectiveQuickPickItem(Directive.Cancel, true, {
 								label: 'Cancel Publish',
 								detail: 'Cannot publish; No remotes found',
 							}),
@@ -321,7 +324,7 @@ export class PushGitCommand extends QuickCommand<State> {
 						step = this.createConfirmStep(
 							appendReposToTitle('Confirm Push', state, context),
 							[],
-							DirectiveQuickPickItem.create(Directive.Cancel, true, {
+							createDirectiveQuickPickItem(Directive.Cancel, true, {
 								label: `Cancel ${this.title}`,
 								detail: `Cannot push; No commits ahead of ${getRemoteNameFromBranchName(
 									status.upstream,
@@ -358,12 +361,12 @@ export class PushGitCommand extends QuickCommand<State> {
 							...(status?.state.behind
 								? []
 								: [
-										FlagsQuickPickItem.create<Flags>(state.flags, [], {
+										createFlagsQuickPickItem<Flags>(state.flags, [], {
 											label: this.title,
 											detail: `Will push${pushDetails}`,
 										}),
 								  ]),
-							FlagsQuickPickItem.create<Flags>(state.flags, ['--force'], {
+							createFlagsQuickPickItem<Flags>(state.flags, ['--force'], {
 								label: `Force ${this.title}${useForceWithLease ? ' (with lease)' : ''}`,
 								description: `--force${useForceWithLease ? '-with-lease' : ''}`,
 								detail: `Will force push${useForceWithLease ? ' (with lease)' : ''} ${pushDetails}${
@@ -378,7 +381,7 @@ export class PushGitCommand extends QuickCommand<State> {
 							}),
 						],
 						status?.state.behind
-							? DirectiveQuickPickItem.create(Directive.Cancel, true, {
+							? createDirectiveQuickPickItem(Directive.Cancel, true, {
 									label: `Cancel ${this.title}`,
 									detail: `Cannot push; ${GitReference.toString(branch)} is behind${
 										status?.upstream ? ` ${getRemoteNameFromBranchName(status.upstream)}` : ''
@@ -409,6 +412,6 @@ export class PushGitCommand extends QuickCommand<State> {
 		}
 
 		const selection: StepSelection<typeof step> = yield step;
-		return QuickCommand.canPickStepContinue(step, state, selection) ? selection[0].item : StepResult.Break;
+		return canPickStepContinue(step, state, selection) ? selection[0].item : StepResultBreak;
 	}
 }

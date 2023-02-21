@@ -2,12 +2,19 @@ import type { CancellationToken, ConfigurationChangeEvent, TextDocumentShowOptio
 import { CancellationTokenSource, Disposable, Uri, ViewColumn, window } from 'vscode';
 import { serializeAutolink } from '../../annotations/autolinks';
 import type { CopyShaToClipboardCommandArgs } from '../../commands';
-import { executeGitCommand, GitActions } from '../../commands/gitCommands.actions';
 import { configuration } from '../../configuration';
 import { Commands, ContextKeys, CoreCommands } from '../../constants';
 import type { Container } from '../../container';
 import { getContext } from '../../context';
 import type { CommitSelectedEvent } from '../../eventBus';
+import { executeGitCommand } from '../../git/actions';
+import {
+	openChanges,
+	openChangesWithWorking,
+	openFile,
+	openFileOnRemote,
+	showDetailsQuickPick,
+} from '../../git/actions/commit';
 import { CommitFormatter } from '../../git/formatters/commitFormatter';
 import type { GitCommit } from '../../git/models/commit';
 import { isCommit } from '../../git/models/commit';
@@ -21,10 +28,11 @@ import type { GitRevisionReference } from '../../git/models/reference';
 import { GitReference } from '../../git/models/reference';
 import type { GitRemote } from '../../git/models/remote';
 import { Logger } from '../../logger';
+import { getLogScope } from '../../logScope';
 import type { ShowInCommitGraphCommandArgs } from '../../plus/webviews/graph/graphWebview';
 import { executeCommand, executeCoreCommand } from '../../system/command';
 import type { DateTimeFormat } from '../../system/date';
-import { debug, getLogScope, log } from '../../system/decorators/log';
+import { debug, log } from '../../system/decorators/log';
 import type { Deferrable } from '../../system/function';
 import { debounce } from '../../system/function';
 import { map, union } from '../../system/iterable';
@@ -787,7 +795,7 @@ export class CommitDetailsWebviewView extends WebviewViewBase<State, Serialized<
 	private showCommitActions() {
 		if (this._context.commit == null || this._context.commit.isUncommitted) return;
 
-		void GitActions.Commit.showDetailsQuickPick(this._context.commit);
+		void showDetailsQuickPick(this._context.commit);
 	}
 
 	private async showFileActions(params: FileActionParams) {
@@ -797,7 +805,7 @@ export class CommitDetailsWebviewView extends WebviewViewBase<State, Serialized<
 		const [commit, file] = result;
 
 		this.updatePinned(true, true);
-		void GitActions.Commit.showDetailsQuickPick(commit, file);
+		void showDetailsQuickPick(commit, file);
 	}
 
 	private async openFileComparisonWithWorking(params: FileActionParams) {
@@ -807,7 +815,7 @@ export class CommitDetailsWebviewView extends WebviewViewBase<State, Serialized<
 		const [commit, file] = result;
 
 		this.updatePinned(true, true);
-		void GitActions.Commit.openChangesWithWorking(file.path, commit, {
+		void openChangesWithWorking(file.path, commit, {
 			preserveFocus: true,
 			preview: true,
 			...this.getShowOptions(params),
@@ -821,7 +829,7 @@ export class CommitDetailsWebviewView extends WebviewViewBase<State, Serialized<
 		const [commit, file] = result;
 
 		this.updatePinned(true, true);
-		void GitActions.Commit.openChanges(file.path, commit, {
+		void openChanges(file.path, commit, {
 			preserveFocus: true,
 			preview: true,
 			...this.getShowOptions(params),
@@ -836,7 +844,7 @@ export class CommitDetailsWebviewView extends WebviewViewBase<State, Serialized<
 		const [commit, file] = result;
 
 		this.updatePinned(true, true);
-		void GitActions.Commit.openFile(file.path, commit, {
+		void openFile(file.path, commit, {
 			preserveFocus: true,
 			preview: true,
 			...this.getShowOptions(params),
@@ -849,7 +857,7 @@ export class CommitDetailsWebviewView extends WebviewViewBase<State, Serialized<
 
 		const [commit, file] = result;
 
-		void GitActions.Commit.openFileOnRemote(file.path, commit);
+		void openFileOnRemote(file.path, commit);
 	}
 
 	private getShowOptions(params: FileActionParams): TextDocumentShowOptions | undefined {

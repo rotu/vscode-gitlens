@@ -1,13 +1,14 @@
 import type { TreeItem } from 'vscode';
 import { ThemeIcon } from 'vscode';
-import { executeGitCommand } from '../../commands/gitCommands.actions';
+import { md5 } from '@env/crypto';
+import { executeGitCommand } from '../../git/actions';
 import { GitUri } from '../../git/gitUri';
 import type { GitLog } from '../../git/models/log';
 import type { SearchQuery, StoredSearchQuery } from '../../git/search';
 import { getSearchQueryComparisonKey, getStoredSearchQuery } from '../../git/search';
 import { gate } from '../../system/decorators/gate';
 import { debug, log } from '../../system/decorators/log';
-import { md5, pluralize } from '../../system/string';
+import { pluralize } from '../../system/string';
 import type { SearchAndCompareView } from '../searchAndCompareView';
 import { RepositoryNode } from './repositoryNode';
 import type { CommitsQueryResults } from './resultsCommitsNode';
@@ -33,7 +34,7 @@ export class SearchResultsNode extends ViewNode<SearchAndCompareView> implements
 	}
 
 	static getPinnableId(repoPath: string, search: SearchQuery | StoredSearchQuery) {
-		return md5(`${repoPath}|${getSearchQueryComparisonKey(search)}`);
+		return md5(`${repoPath}|${getSearchQueryComparisonKey(search)}`, 'base64');
 	}
 
 	private _instanceId: number;

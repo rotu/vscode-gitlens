@@ -14,6 +14,7 @@ import type {
 	IncludeOnlyRefsById,
 	PullRequestMetadata,
 	RefMetadata,
+	RefMetadataItem,
 	RefMetadataType,
 	Remote,
 	Tag,
@@ -38,6 +39,7 @@ export type GraphRefMetadata = RefMetadata | null;
 export type GraphUpstreamMetadata = UpstreamMetadata | null;
 export type GraphRefsMetadata = Record</* id */ string, GraphRefMetadata>;
 export type GraphHostingServiceType = HostingServiceType;
+export type GraphRefMetadataItem = RefMetadataItem;
 export type GraphRefMetadataType = RefMetadataType;
 export type GraphMissingRefsMetadataType = RefMetadataType;
 export type GraphMissingRefsMetadata = Record</*id*/ string, /*missingType*/ GraphMissingRefsMetadataType[]>;
@@ -45,7 +47,18 @@ export type GraphPullRequestMetadata = PullRequestMetadata;
 
 export enum GraphRefMetadataTypes {
 	Upstream = 'upstream',
-	PullRequest = 'pullRequests',
+	PullRequest = 'pullRequest',
+}
+
+export const enum GraphScrollMarkerTypes {
+	Selection = 'selection',
+	Head = 'head',
+	Highlights = 'highlights',
+	LocalBranches = 'localBranches',
+	RemoteBranches = 'remoteBranches',
+	Stashes = 'stashes',
+	Tags = 'tags',
+	Upstream = 'upstream',
 }
 
 export const supportedRefMetadataTypes: GraphRefMetadataType[] = Object.values(GraphRefMetadataTypes);
@@ -137,6 +150,7 @@ export interface GraphComponentConfig {
 	highlightRowsOnRefHover?: boolean;
 	minimap?: boolean;
 	scrollRowPadding?: number;
+	enabledScrollMarkerTypes?: GraphScrollMarkerTypes[];
 	showGhostRefsOnRowHover?: boolean;
 	showRemoteNamesOnRefs?: boolean;
 	idLength?: number;
@@ -182,6 +196,7 @@ export type DoubleClickedParams =
 	| {
 			type: 'ref';
 			ref: GraphRef;
+			metadata?: GraphRefMetadataItem;
 	  }
 	| {
 			type: 'row';
@@ -270,7 +285,7 @@ export const UpdateSelectionCommandType = new IpcCommandType<UpdateSelectionPara
 export interface DidChangeParams {
 	state: State;
 }
-export const DidChangeNotificationType = new IpcNotificationType<DidChangeParams>('graph/didChange');
+export const DidChangeNotificationType = new IpcNotificationType<DidChangeParams>('graph/didChange', true);
 
 export interface DidChangeGraphConfigurationParams {
 	config: GraphComponentConfig;
@@ -381,4 +396,4 @@ export const DidSearchNotificationType = new IpcNotificationType<DidSearchParams
 export interface DidFetchParams {
 	lastFetched: Date;
 }
-export const DidFetchNotificationType = new IpcNotificationType<DidFetchParams>('graph/didFetch');
+export const DidFetchNotificationType = new IpcNotificationType<DidFetchParams>('graph/didFetch', true);

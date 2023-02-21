@@ -1,6 +1,6 @@
 import { configuration } from '../../configuration';
 import { GlyphChars } from '../../constants';
-import { getBranchNameWithoutRemote } from './branch';
+import { getBranchNameWithoutRemote, getRemoteNameFromBranchName, splitBranchNameAndRemote } from './branch';
 
 const rangeRegex = /^(\S*?)(\.\.\.?)(\S*)\s*$/;
 const shaLikeRegex = /(^[0-9a-f]{40}([\^@~:]\S*)?$)|(^[0]{40}(:|-)$)/;
@@ -306,6 +306,11 @@ export namespace GitReference {
 			let refName = options?.quoted ? `'${ref.name}'` : ref.name;
 			switch (ref.refType) {
 				case 'branch':
+					if (ref.remote) {
+						refName = `${getRemoteNameFromBranchName(refName)}: ${getBranchNameWithoutRemote(refName)}`;
+						refName = options?.quoted ? `'${refName}'` : refName;
+					}
+
 					result = `${options.label ? `${ref.remote ? 'remote ' : ''}branch ` : ''}${
 						options.icon ? `$(git-branch)${GlyphChars.Space}${refName}` : refName
 					}`;
@@ -378,4 +383,11 @@ export namespace GitReference {
 				return `${refs.length} ${GitReference.isStash(refs[0]) ? 'stashes' : 'commits'}${expanded}`;
 		}
 	}
+}
+
+export function splitRefNameAndRemote(ref: GitReference): [name: string, remote: string | undefined] {
+	if (ref.refType === 'branch') {
+		return ref.remote ? splitBranchNameAndRemote(ref.name) : [ref.name, undefined];
+	}
+	return [ref.name, undefined];
 }

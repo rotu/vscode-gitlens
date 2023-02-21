@@ -3,8 +3,10 @@ import type { GitBranch } from '../../git/models/branch';
 import type { GitLog } from '../../git/models/log';
 import { GitReference, GitRevision } from '../../git/models/reference';
 import type { Repository } from '../../git/models/repository';
-import { Directive, DirectiveQuickPickItem } from '../../quickpicks/items/directive';
-import { FlagsQuickPickItem } from '../../quickpicks/items/flags';
+import type { DirectiveQuickPickItem } from '../../quickpicks/items/directive';
+import { createDirectiveQuickPickItem, Directive } from '../../quickpicks/items/directive';
+import type { FlagsQuickPickItem } from '../../quickpicks/items/flags';
+import { createFlagsQuickPickItem } from '../../quickpicks/items/flags';
 import { pluralize } from '../../system/string';
 import { getEditorCommand } from '../../system/utils';
 import type { ViewsWithRepositoryFolders } from '../../views/viewBase';
@@ -13,17 +15,20 @@ import type {
 	PartialStepState,
 	QuickPickStep,
 	StepGenerator,
+	StepResult,
 	StepSelection,
 	StepState,
 } from '../quickCommand';
 import {
 	appendReposToTitle,
+	canPickStepContinue,
+	endSteps,
 	pickBranchOrTagStep,
 	pickCommitStep,
 	pickRepositoryStep,
 	QuickCommand,
 	QuickCommandButtons,
-	StepResult,
+	StepResultBreak,
 } from '../quickCommand';
 
 interface Context {
@@ -125,7 +130,7 @@ export class RebaseGitCommand extends QuickCommand<State> {
 				} else {
 					const result = yield* pickRepositoryStep(state, context);
 					// Always break on the first step (so we will go back)
-					if (result === StepResult.Break) break;
+					if (result === StepResultBreak) break;
 
 					state.repo = result;
 				}
@@ -153,7 +158,7 @@ export class RebaseGitCommand extends QuickCommand<State> {
 					value: context.selectedBranchOrTag == null ? state.reference?.ref : undefined,
 					additionalButtons: [pickCommitToggle],
 				});
-				if (result === StepResult.Break) {
+				if (result === StepResultBreak) {
 					// If we skipped the previous step, make sure we back up past it
 					if (skippedStepOne) {
 						state.counter--;
@@ -197,21 +202,21 @@ export class RebaseGitCommand extends QuickCommand<State> {
 							  })} onto`,
 					picked: state.reference?.ref,
 				});
-				if (result === StepResult.Break) continue;
+				if (result === StepResultBreak) continue;
 
 				state.reference = result;
 			}
 
 			const result = yield* this.confirmStep(state as RebaseStepState, context);
-			if (result === StepResult.Break) continue;
+			if (result === StepResultBreak) continue;
 
 			state.flags = result;
 
-			QuickCommand.endSteps(state);
+			endSteps(state);
 			void this.execute(state as RebaseStepState);
 		}
 
-		return state.counter < 0 ? StepResult.Break : undefined;
+		return state.counter < 0 ? StepResultBreak : undefined;
 	}
 
 	private async *confirmStep(state: RebaseStepState, context: Context): AsyncStepResultGenerator<Flags[]> {
@@ -226,7 +231,7 @@ export class RebaseGitCommand extends QuickCommand<State> {
 			const step: QuickPickStep<DirectiveQuickPickItem> = this.createConfirmStep(
 				appendReposToTitle(`Confirm ${context.title}`, state, context),
 				[],
-				DirectiveQuickPickItem.create(Directive.Cancel, true, {
+				createDirectiveQuickPickItem(Directive.Cancel, true, {
 					label: `Cancel ${this.title}`,
 					detail: `${GitReference.toString(context.destination, {
 						capitalize: true,
@@ -234,21 +239,21 @@ export class RebaseGitCommand extends QuickCommand<State> {
 				}),
 			);
 			const selection: StepSelection<typeof step> = yield step;
-			QuickCommand.canPickStepContinue(step, state, selection);
-			return StepResult.Break;
+			canPickStepContinue(step, state, selection);
+			return StepResultBreak;
 		}
 
 		const step: QuickPickStep<FlagsQuickPickItem<Flags>> = this.createConfirmStep(
 			appendReposToTitle(`Confirm ${context.title}`, state, context),
 			[
-				FlagsQuickPickItem.create<Flags>(state.flags, [], {
+				createFlagsQuickPickItem<Flags>(state.flags, [], {
 					label: this.title,
 					detail: `Will update ${GitReference.toString(context.destination)} by applying ${pluralize(
 						'commit',
 						count,
 					)} on top of ${GitReference.toString(state.reference)}`,
 				}),
-				FlagsQuickPickItem.create<Flags>(state.flags, ['--interactive'], {
+				createFlagsQuickPickItem<Flags>(state.flags, ['--interactive'], {
 					label: `Interactive ${this.title}`,
 					description: '--interactive',
 					detail: `Will interactively update ${GitReference.toString(
@@ -258,6 +263,6 @@ export class RebaseGitCommand extends QuickCommand<State> {
 			],
 		);
 		const selection: StepSelection<typeof step> = yield step;
-		return QuickCommand.canPickStepContinue(step, state, selection) ? selection[0].item : StepResult.Break;
+		return canPickStepContinue(step, state, selection) ? selection[0].item : StepResultBreak;
 	}
 }
