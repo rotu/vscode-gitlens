@@ -19,13 +19,13 @@ import { CommitFormatter } from '../../git/formatters/commitFormatter';
 import type { GitCommit } from '../../git/models/commit';
 import { isCommit } from '../../git/models/commit';
 import type { GitFileChange } from '../../git/models/file';
-import { GitFile } from '../../git/models/file';
+import { getGitFileStatusIcon } from '../../git/models/file';
 import type { IssueOrPullRequest } from '../../git/models/issue';
 import { serializeIssueOrPullRequest } from '../../git/models/issue';
 import type { PullRequest } from '../../git/models/pullRequest';
 import { serializePullRequest } from '../../git/models/pullRequest';
 import type { GitRevisionReference } from '../../git/models/reference';
-import { GitReference } from '../../git/models/reference';
+import { getReferenceFromRevision } from '../../git/models/reference';
 import type { GitRemote } from '../../git/models/remote';
 import { Logger } from '../../logger';
 import { getLogScope } from '../../logScope';
@@ -305,7 +305,7 @@ export class CommitDetailsWebviewView extends WebviewViewBase<State, Serialized<
 							if (this._context.commit == null) return;
 
 							void executeCommand<ShowInCommitGraphCommandArgs>(Commands.ShowInCommitGraph, {
-								ref: GitReference.fromRevision(this._context.commit),
+								ref: getReferenceFromRevision(this._context.commit),
 							});
 							break;
 						case 'more':
@@ -724,7 +724,7 @@ export class CommitDetailsWebviewView extends WebviewViewBase<State, Serialized<
 			author: { ...commit.author, avatar: avatarUri?.toString(true) },
 			// committer: { ...commit.committer, avatar: committerAvatar?.toString(true) },
 			files: commit.files?.map(({ status, repoPath, path, originalPath }) => {
-				const icon = GitFile.getStatusIcon(status);
+				const icon = getGitFileStatusIcon(status);
 				return {
 					path: path,
 					originalPath: originalPath,

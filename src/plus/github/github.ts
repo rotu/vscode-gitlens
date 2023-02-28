@@ -23,7 +23,7 @@ import type { Account } from '../../git/models/author';
 import type { DefaultBranch } from '../../git/models/defaultBranch';
 import type { IssueOrPullRequest, SearchedIssue } from '../../git/models/issue';
 import type { PullRequest, SearchedPullRequest } from '../../git/models/pullRequest';
-import { GitRevision } from '../../git/models/reference';
+import { isSha } from '../../git/models/reference';
 import type { GitUser } from '../../git/models/user';
 import { getGitHubNoReplyAddressParts } from '../../git/remotes/github';
 import type { RichRemoteProvider } from '../../git/remotes/richRemoteProvider';
@@ -48,16 +48,135 @@ import type {
 	GitHubCommitRef,
 	GitHubContributor,
 	GitHubDetailedPullRequest,
+	GitHubIssueDetailed,
 	GitHubIssueOrPullRequest,
 	GitHubPagedResult,
 	GitHubPageInfo,
+	GitHubPullRequest,
 	GitHubPullRequestState,
 	GitHubTag,
 } from './models';
-import { GitHubDetailedIssue, GitHubPullRequest } from './models';
+import { fromGitHubIssueDetailed, fromGitHubPullRequest, fromGitHubPullRequestDetailed } from './models';
 
 const emptyPagedResult: PagedResult<any> = Object.freeze({ values: [] });
 const emptyBlameResult: GitHubBlame = Object.freeze({ ranges: [] });
+
+const prNodeProperties = `
+assignees(first: 10) {
+  nodes {
+	login
+	avatarUrl
+	url
+  }
+}
+author {
+  login
+  avatarUrl
+  url
+}
+baseRefName
+baseRefOid
+baseRepository {
+  name
+  owner {
+	login
+  }
+}
+checksUrl
+isDraft
+isCrossRepository
+isReadByViewer
+headRefName
+headRefOid
+headRepository {
+  name
+  owner {
+	login
+  }
+}
+permalink
+number
+title
+state
+additions
+deletions
+updatedAt
+closedAt
+mergeable
+mergedAt
+mergedBy {
+  login
+}
+repository {
+  isFork
+  owner {
+	login
+  }
+}
+repository {
+  isFork
+  owner {
+	login
+  }
+}
+reviewDecision
+reviewRequests(first: 10) {
+  nodes {
+	asCodeOwner
+	id
+	requestedReviewer {
+	  ... on User {
+		login
+		avatarUrl
+		url
+	  }
+	}
+  }
+}
+totalCommentsCount
+`;
+
+const issueNodeProperties = `
+... on Issue {
+	assignees(first: 100) {
+		nodes {
+			login
+			url
+			avatarUrl
+		}
+	}
+	author {
+		login
+		avatarUrl
+		url
+	}
+	comments {
+	  totalCount
+	}
+	number
+	title
+	url
+	createdAt
+	closedAt
+	closed
+	updatedAt
+	labels(first: 20) {
+		nodes {
+			color
+			name
+		}
+	}
+	reactions(content: THUMBS_UP) {
+	  totalCount
+	}
+	repository {
+		name
+		owner {
+			login
+		}
+	}
+}
+`;
 
 export class GitHubApi implements Disposable {
 	private readonly _onDidReauthenticate = new EventEmitter<void>();
@@ -517,7 +636,7 @@ export class GitHubApi implements Disposable {
 				);
 			}
 
-			return GitHubPullRequest.from(prs[0], provider);
+			return fromGitHubPullRequest(prs[0], provider);
 		} catch (ex) {
 			if (ex instanceof ProviderRequestNotFoundError) return undefined;
 
@@ -617,7 +736,7 @@ export class GitHubApi implements Disposable {
 				);
 			}
 
-			return GitHubPullRequest.from(prs[0], provider);
+			return fromGitHubPullRequest(prs[0], provider);
 		} catch (ex) {
 			if (ex instanceof ProviderRequestNotFoundError) return undefined;
 
@@ -859,7 +978,7 @@ export class GitHubApi implements Disposable {
 		ref: string,
 		path: string,
 	): Promise<(GitHubCommit & { viewer?: string }) | undefined> {
-		if (GitRevision.isSha(ref)) return this.getCommit(token, owner, repo, ref);
+		if (isSha(ref)) return this.getCommit(token, owner, repo, ref);
 
 		// TODO: optimize this -- only need to get the sha for the ref
 		const results = await this.getCommits(token, owner, repo, ref, { limit: 1, path: path });
@@ -2350,7 +2469,7 @@ export class GitHubApi implements Disposable {
 
 			function toQueryResult(pr: GitHubDetailedPullRequest, reason?: string): SearchedPullRequest {
 				return {
-					pullRequest: GitHubPullRequest.fromDetailed(pr, provider),
+					pullRequest: fromGitHubPullRequestDetailed(pr, provider),
 					reasons: reason ? [reason] : [],
 				};
 			}
@@ -2379,16 +2498,16 @@ export class GitHubApi implements Disposable {
 		const scope = getLogScope();
 		interface SearchResult {
 			related: {
-				nodes: GitHubDetailedIssue[];
+				nodes: GitHubIssueDetailed[];
 			};
 			authored: {
-				nodes: GitHubDetailedIssue[];
+				nodes: GitHubIssueDetailed[];
 			};
 			assigned: {
-				nodes: GitHubDetailedIssue[];
+				nodes: GitHubIssueDetailed[];
 			};
 			mentioned: {
-				nodes: GitHubDetailedIssue[];
+				nodes: GitHubIssueDetailed[];
 			};
 		}
 
@@ -2439,9 +2558,9 @@ export class GitHubApi implements Disposable {
 				scope,
 			);
 
-			function toQueryResult(issue: GitHubDetailedIssue, reason?: string): SearchedIssue {
+			function toQueryResult(issue: GitHubIssueDetailed, reason?: string): SearchedIssue {
 				return {
-					issue: GitHubDetailedIssue.from(issue, provider),
+					issue: fromGitHubIssueDetailed(issue, provider),
 					reasons: reason ? [reason] : [],
 				};
 			}
@@ -2475,120 +2594,3 @@ function uniqueWithReasons<T extends { reasons: string[] }>(items: T[], lookup: 
 		return original;
 	});
 }
-
-const prNodeProperties = `
-assignees(first: 10) {
-  nodes {
-	login
-	avatarUrl
-	url
-  }
-}
-author {
-  login
-  avatarUrl
-  url
-}
-baseRefName
-baseRefOid
-baseRepository {
-  name
-  owner {
-	login
-  }
-}
-checksUrl
-isDraft
-isCrossRepository
-isReadByViewer
-headRefName
-headRefOid
-headRepository {
-  name
-  owner {
-	login
-  }
-}
-permalink
-number
-title
-state
-additions
-deletions
-updatedAt
-closedAt
-mergeable
-mergedAt
-mergedBy {
-  login
-}
-repository {
-  isFork
-  owner {
-	login
-  }
-}
-repository {
-  isFork
-  owner {
-	login
-  }
-}
-reviewDecision
-reviewRequests(first: 10) {
-  nodes {
-	asCodeOwner
-	id
-	requestedReviewer {
-	  ... on User {
-		login
-		avatarUrl
-		url
-	  }
-	}
-  }
-}
-totalCommentsCount
-`;
-
-const issueNodeProperties = `
-... on Issue {
-	assignees(first: 100) {
-		nodes {
-			login
-			url
-			avatarUrl
-		}
-	}
-	author {
-		login
-		avatarUrl
-		url
-	}
-	comments {
-	  totalCount
-	}
-	number
-	title
-	url
-	createdAt
-	closedAt
-	closed
-	updatedAt
-	labels(first: 20) {
-		nodes {
-			color
-			name
-		}
-	}
-	reactions(content: THUMBS_UP) {
-	  totalCount
-	}
-	repository {
-		name
-		owner {
-			login
-		}
-	}
-}
-`;

@@ -48,6 +48,7 @@ import type { GitUri } from './gitUri';
 import type { GitBlame, GitBlameLine, GitBlameLines } from './models/blame';
 import type { BranchSortOptions, GitBranch } from './models/branch';
 import { GitCommit, GitCommitIdentity } from './models/commit';
+import { deletedOrMissing, uncommitted, uncommittedStaged } from './models/constants';
 import type { GitContributor } from './models/contributor';
 import type { GitDiff, GitDiffFilter, GitDiffHunkLine, GitDiffShortStat } from './models/diff';
 import type { GitFile } from './models/file';
@@ -58,7 +59,7 @@ import type { GitMergeStatus } from './models/merge';
 import type { PullRequest, PullRequestState, SearchedPullRequest } from './models/pullRequest';
 import type { GitRebaseStatus } from './models/rebase';
 import type { GitBranchReference, GitReference } from './models/reference';
-import { GitRevision } from './models/reference';
+import { createRevisionRange, isSha, isUncommitted, isUncommittedParent } from './models/reference';
 import type { GitReflog } from './models/reflog';
 import { GitRemote } from './models/remote';
 import type { RepositoryChangeEvent } from './models/repository';
@@ -70,7 +71,6 @@ import type { GitTreeEntry } from './models/tree';
 import type { GitUser } from './models/user';
 import type { GitWorktree } from './models/worktree';
 import type { RemoteProvider } from './remotes/remoteProvider';
-import { RichRemoteProviders } from './remotes/remoteProviderConnections';
 import type { RemoteProviders } from './remotes/remoteProviders';
 import type { RichRemoteProvider } from './remotes/richRemoteProvider';
 import type { GitSearch, SearchQuery } from './search';
@@ -192,7 +192,7 @@ export class GitProviderService implements Disposable {
 			window.onDidChangeWindowState(this.onWindowStateChanged, this),
 			workspace.onDidChangeWorkspaceFolders(this.onWorkspaceFoldersChanged, this),
 			configuration.onDidChange(this.onConfigurationChanged, this),
-			RichRemoteProviders.onDidChangeConnectionState(e => {
+			container.richRemoteProviders.onDidChangeConnectionState(e => {
 				if (e.reason === 'connected') {
 					resetAvatarCache('failed');
 				}
@@ -437,17 +437,24 @@ export class GitProviderService implements Disposable {
 					}
 				}
 
-				this.updateContext();
+				const { deactivating } = this.container;
+				if (!deactivating) {
+					this.updateContext();
+				}
 
 				if (removed.length) {
 					// Defer the event trigger enough to let everything unwind
 					queueMicrotask(() => {
-						this.fireRepositoriesChanged([], removed);
+						if (!deactivating) {
+							this.fireRepositoriesChanged([], removed);
+						}
 						removed.forEach(r => r.dispose());
 					});
 				}
 
-				this.fireProvidersChanged([], [provider]);
+				if (!deactivating) {
+					this.fireProvidersChanged([], [provider]);
+				}
 			},
 		};
 	}
@@ -742,11 +749,13 @@ export class GitProviderService implements Disposable {
 		await Promise.allSettled(promises);
 
 		if (!this._initializing) {
-			void this.container.storage.storeWorkspace('assumeRepositoriesOnStartup', enabled);
+			void this.container.storage.storeWorkspace('assumeRepositoriesOnStartup', enabled).catch();
 		}
 	}
 
 	private updateContext() {
+		if (this.container.deactivating) return;
+
 		const openRepositoryCount = this.openRepositoryCount;
 		const hasRepositories = openRepositoryCount !== 0;
 
@@ -882,7 +891,7 @@ export class GitProviderService implements Disposable {
 		path: string,
 		ref: string | undefined,
 	): Promise<Uri | undefined> {
-		if (repoPath == null || ref === GitRevision.deletedOrMissing) return undefined;
+		if (repoPath == null || ref === deletedOrMissing) return undefined;
 
 		const { provider, path: rp } = this.getProvider(repoPath);
 		return provider.getBestRevisionUri(rp, provider.getRelativePath(path, rp), ref);
@@ -1159,7 +1168,7 @@ export class GitProviderService implements Disposable {
 	@log<GitProviderService['getBranchAheadRange']>({ args: { 0: b => b.name } })
 	async getBranchAheadRange(branch: GitBranch): Promise<string | undefined> {
 		if (branch.state.ahead > 0) {
-			return GitRevision.createRange(branch.upstream?.name, branch.ref);
+			return createRevisionRange(branch.upstream?.name, branch.ref);
 		}
 
 		if (branch.upstream == null) {
@@ -1180,7 +1189,7 @@ export class GitProviderService implements Disposable {
 
 				const possibleBranch = weightedBranch!.branch.upstream?.name ?? weightedBranch!.branch.ref;
 				if (possibleBranch !== branch.ref) {
-					return GitRevision.createRange(possibleBranch, branch.ref);
+					return createRevisionRange(possibleBranch, branch.ref);
 				}
 			}
 		}
@@ -1272,7 +1281,7 @@ export class GitProviderService implements Disposable {
 	async getCommit(repoPath: string | Uri, ref: string): Promise<GitCommit | undefined> {
 		const { provider, path } = this.getProvider(repoPath);
 
-		if (ref === GitRevision.uncommitted || ref === GitRevision.uncommittedStaged) {
+		if (ref === uncommitted || ref === uncommittedStaged) {
 			const now = new Date();
 			const user = await this.getCurrentUser(repoPath);
 			return new GitCommit(
@@ -1429,7 +1438,7 @@ export class GitProviderService implements Disposable {
 
 	@log()
 	async getFileStatusForCommit(repoPath: string | Uri, uri: Uri, ref: string): Promise<GitFile | undefined> {
-		if (ref === GitRevision.deletedOrMissing || GitRevision.isUncommitted(ref)) return undefined;
+		if (ref === deletedOrMissing || isUncommitted(ref)) return undefined;
 
 		const { provider, path } = this.getProvider(repoPath);
 		return provider.getFileStatusForCommit(path, uri, ref);
@@ -1555,7 +1564,7 @@ export class GitProviderService implements Disposable {
 		skip: number = 0,
 		firstParent: boolean = false,
 	): Promise<PreviousComparisonUrisResult | undefined> {
-		if (ref === GitRevision.deletedOrMissing) return Promise.resolve(undefined);
+		if (ref === deletedOrMissing) return Promise.resolve(undefined);
 
 		const { provider, path } = this.getProvider(repoPath);
 		return provider.getPreviousComparisonUris(path, uri, ref, skip, firstParent);
@@ -1569,7 +1578,7 @@ export class GitProviderService implements Disposable {
 		ref: string | undefined,
 		skip: number = 0,
 	): Promise<PreviousLineComparisonUrisResult | undefined> {
-		if (ref === GitRevision.deletedOrMissing) return Promise.resolve(undefined);
+		if (ref === deletedOrMissing) return Promise.resolve(undefined);
 
 		const { provider, path } = this.getProvider(repoPath);
 		return provider.getPreviousComparisonUrisForLine(path, uri, editorLine, ref, skip);
@@ -1650,7 +1659,7 @@ export class GitProviderService implements Disposable {
 		remoteOrProvider: GitRemote | RichRemoteProvider,
 		options?: { timeout?: number },
 	): Promise<PullRequest | undefined> {
-		if (GitRevision.isUncommitted(ref)) return undefined;
+		if (isUncommitted(ref)) return undefined;
 
 		let provider;
 		if (GitRemote.is(remoteOrProvider)) {
@@ -2324,15 +2333,15 @@ export class GitProviderService implements Disposable {
 		pathOrUri?: string | Uri,
 		options?: { timeout?: number },
 	) {
-		if (pathOrUri != null && GitRevision.isUncommittedParent(ref)) {
+		if (pathOrUri != null && isUncommittedParent(ref)) {
 			ref = 'HEAD';
 		}
 
 		if (
 			!ref ||
-			ref === GitRevision.deletedOrMissing ||
-			(pathOrUri == null && GitRevision.isSha(ref)) ||
-			(pathOrUri != null && GitRevision.isUncommitted(ref))
+			ref === deletedOrMissing ||
+			(pathOrUri == null && isSha(ref)) ||
+			(pathOrUri != null && isUncommitted(ref))
 		) {
 			return ref;
 		}
@@ -2381,7 +2390,7 @@ export class GitProviderService implements Disposable {
 	@log()
 	async validateReference(repoPath: string | Uri, ref: string) {
 		if (ref == null || ref.length === 0) return false;
-		if (ref === GitRevision.deletedOrMissing || GitRevision.isUncommitted(ref)) return true;
+		if (ref === deletedOrMissing || isUncommitted(ref)) return true;
 
 		const { provider, path } = this.getProvider(repoPath);
 		return provider.validateReference(path, ref);

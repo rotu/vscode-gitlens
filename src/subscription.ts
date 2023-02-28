@@ -28,6 +28,7 @@ export interface SubscriptionPlan {
 	readonly id: SubscriptionPlanId;
 	readonly name: string;
 	readonly bundle: boolean;
+	readonly cancelled: boolean;
 	readonly startedOn: string;
 	readonly expiresOn?: string | undefined;
 	readonly organizationId: string | undefined;
@@ -74,11 +75,13 @@ export function getSubscriptionPlan(
 	organizationId: string | undefined,
 	startedOn?: Date,
 	expiresOn?: Date,
+	cancelled: boolean = false,
 ): SubscriptionPlan {
 	return {
 		id: id,
 		name: getSubscriptionPlanName(id),
 		bundle: bundle,
+		cancelled: cancelled,
 		organizationId: organizationId,
 		startedOn: (startedOn ?? new Date()).toISOString(),
 		expiresOn: expiresOn != null ? expiresOn.toISOString() : undefined,
@@ -111,7 +114,7 @@ const plansPriority = new Map<SubscriptionPlanId | undefined, number>([
 ]);
 
 export function getSubscriptionPlanPriority(id: SubscriptionPlanId | undefined): number {
-	return plansPriority.get(id)!;
+	return plansPriority.get(id) ?? -1;
 }
 
 export function getSubscriptionTimeRemaining(
