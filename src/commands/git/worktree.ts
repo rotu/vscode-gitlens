@@ -1,7 +1,6 @@
 import type { MessageItem } from 'vscode';
 import { QuickInputButtons, Uri, window, workspace } from 'vscode';
-import type { Config } from '../../configuration';
-import { configuration } from '../../configuration';
+import type { Config } from '../../config';
 import type { Container } from '../../container';
 import { PlusFeatures } from '../../features';
 import { convertOpenFlagsToLocation, reveal, revealInFileExplorer } from '../../git/actions/worktree';
@@ -21,6 +20,7 @@ import { createQuickPickSeparator } from '../../quickpicks/items/common';
 import { Directive } from '../../quickpicks/items/directive';
 import type { FlagsQuickPickItem } from '../../quickpicks/items/flags';
 import { createFlagsQuickPickItem } from '../../quickpicks/items/flags';
+import { configuration } from '../../system/configuration';
 import { basename, isDescendent } from '../../system/path';
 import { pluralize, truncateLeft } from '../../system/string';
 import { openWorkspace, OpenWorkspaceLocation } from '../../system/utils';
@@ -100,6 +100,15 @@ type WorktreeStepState<T extends State> = SomeNonNullable<StepState<T>, 'subcomm
 type CreateStepState<T extends CreateState = CreateState> = WorktreeStepState<ExcludeSome<T, 'repo', string>>;
 type DeleteStepState<T extends DeleteState = DeleteState> = WorktreeStepState<ExcludeSome<T, 'repo', string>>;
 type OpenStepState<T extends OpenState = OpenState> = WorktreeStepState<ExcludeSome<T, 'repo', string>>;
+
+function assertStateStepRepository(
+	state: PartialStepState<State>,
+): asserts state is PartialStepState<State> & { repo: Repository } {
+	if (state.repo != null && typeof state.repo !== 'string') return;
+
+	debugger;
+	throw new Error('Missing repository');
+}
 
 const subcommandToTitleMap = new Map<State['subcommand'], string>([
 	['create', 'Create'],
@@ -220,8 +229,9 @@ export class WorktreeGitCommand extends QuickCommand<State> {
 
 			// Ensure we use the "main" repository if we are in a worktree already
 			state.repo = await state.repo.getMainRepository();
+			assertStateStepRepository(state);
 
-			const result = yield* ensureAccessStep(state as any, context, PlusFeatures.Worktrees);
+			const result = yield* ensureAccessStep(state, context, PlusFeatures.Worktrees);
 			if (result === StepResultBreak) break;
 
 			context.title = getTitle(state.subcommand === 'delete' ? 'Worktrees' : this.title, state.subcommand);

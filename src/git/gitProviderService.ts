@@ -11,23 +11,23 @@ import type {
 } from 'vscode';
 import { Disposable, EventEmitter, FileType, ProgressLocation, Uri, window, workspace } from 'vscode';
 import { resetAvatarCache } from '../avatars';
-import { configuration } from '../configuration';
 import { ContextKeys, CoreGitConfiguration, GlyphChars, Schemes } from '../constants';
 import type { Container } from '../container';
 import { setContext } from '../context';
 import { AccessDeniedError, ProviderNotFoundError } from '../errors';
 import type { FeatureAccess, Features, PlusFeatures, RepoFeatureAccess } from '../features';
-import { Logger } from '../logger';
-import { getLogScope } from '../logScope';
 import type { SubscriptionChangeEvent } from '../plus/subscription/subscriptionService';
 import type { RepoComparisonKey } from '../repositories';
 import { asRepoComparisonKey, Repositories } from '../repositories';
 import type { Subscription } from '../subscription';
 import { isSubscriptionPaidPlan, SubscriptionPlanId } from '../subscription';
 import { groupByFilterMap, groupByMap, joinUnique } from '../system/array';
+import { configuration } from '../system/configuration';
 import { gate } from '../system/decorators/gate';
 import { debug, log } from '../system/decorators/log';
 import { count, filter, first, flatMap, join, map, some } from '../system/iterable';
+import { Logger } from '../system/logger';
+import { getLogScope } from '../system/logger.scope';
 import { getBestPath, getScheme, isAbsolute, maybeUri, normalizePath } from '../system/path';
 import { cancellable, fastestSettled, getSettledValue, isPromise, PromiseCancelledError } from '../system/promise';
 import { VisitedPathsTrie } from '../system/trie';
@@ -2025,7 +2025,7 @@ export class GitProviderService implements Disposable {
 	@log<GitProviderService['getOrOpenRepository']>({ exit: r => `returned ${r?.path}` })
 	async getOrOpenRepository(
 		uri: Uri,
-		options?: { closeOnOpen?: boolean; detectNested?: boolean },
+		options?: { closeOnOpen?: boolean; detectNested?: boolean; force?: boolean },
 	): Promise<Repository | undefined> {
 		const scope = getLogScope();
 
@@ -2038,14 +2038,14 @@ export class GitProviderService implements Disposable {
 		const detectNested = options?.detectNested ?? configuration.get('detectNestedRepositories', uri);
 		if (!detectNested) {
 			if (repository != null) return repository;
-		} else if (this._visitedPaths.has(path)) {
+		} else if (!options?.force && this._visitedPaths.has(path)) {
 			return repository;
 		} else {
 			const stats = await workspace.fs.stat(uri);
 			// If the uri isn't a directory, go up one level
 			if ((stats.type & FileType.Directory) !== FileType.Directory) {
 				uri = Uri.joinPath(uri, '..');
-				if (this._visitedPaths.has(getBestPath(uri))) return repository;
+				if (!options?.force && this._visitedPaths.has(getBestPath(uri))) return repository;
 			}
 
 			isDirectory = true;

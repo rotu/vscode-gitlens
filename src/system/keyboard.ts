@@ -1,10 +1,10 @@
 import { Disposable } from 'vscode';
-import { ContextKeys } from './constants';
-import { setContext } from './context';
+import { commandPrefix, ContextKeys } from '../constants';
+import { setContext } from '../context';
+import { registerCommand } from './command';
+import { log } from './decorators/log';
 import { Logger } from './logger';
-import { getLogScope } from './logScope';
-import { registerCommand } from './system/command';
-import { log } from './system/decorators/log';
+import { getLogScope } from './logger.scope';
 
 export declare interface KeyCommand {
 	onDidPressKey?(key: Keys): void | Promise<void>;
@@ -22,6 +22,8 @@ export const keys = [
 	'ctrl+right',
 	'alt+,',
 	'alt+.',
+	'alt+enter',
+	'ctrl+enter',
 	'escape',
 ] as const;
 export type Keys = (typeof keys)[number];
@@ -153,7 +155,9 @@ export class Keyboard implements Disposable {
 	private readonly _disposable: Disposable;
 
 	constructor() {
-		const subscriptions = keys.map(key => registerCommand(`gitlens.key.${key}`, () => this.execute(key), this));
+		const subscriptions = keys.map(key =>
+			registerCommand(`${commandPrefix}.key.${key}`, () => this.execute(key), this),
+		);
 		this._disposable = Disposable.from(...subscriptions);
 	}
 

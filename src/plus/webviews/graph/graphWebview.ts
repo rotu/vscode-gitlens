@@ -27,8 +27,7 @@ import type {
 	ShowCommitsInViewCommandArgs,
 } from '../../../commands';
 import { parseCommandContext } from '../../../commands/base';
-import type { Config } from '../../../configuration';
-import { configuration } from '../../../configuration';
+import type { Config } from '../../../config';
 import { Commands, ContextKeys, CoreCommands, CoreGitCommands, GlyphChars } from '../../../constants';
 import type { Container } from '../../../container';
 import { getContext, onDidChangeContext } from '../../../context';
@@ -66,7 +65,7 @@ import { Repository, RepositoryChange, RepositoryChangeComparisonMode } from '..
 import type { GitSearch } from '../../../git/search';
 import { getSearchQueryComparisonKey } from '../../../git/search';
 import { showRepositoryPicker } from '../../../quickpicks/repositoryPicker';
-import type { StoredGraphFilters, StoredGraphIncludeOnlyRef } from '../../../storage';
+import type { StoredGraphFilters, StoredGraphIncludeOnlyRef, StoredGraphRefType } from '../../../storage';
 import {
 	executeActionCommand,
 	executeCommand,
@@ -74,6 +73,7 @@ import {
 	executeCoreGitCommand,
 	registerCommand,
 } from '../../../system/command';
+import { configuration } from '../../../system/configuration';
 import { gate } from '../../../system/decorators/gate';
 import { debug } from '../../../system/decorators/log';
 import type { Deferrable } from '../../../system/function';
@@ -1129,7 +1129,7 @@ export class GraphWebview extends WebviewBase<State> {
 		repoPath: string | undefined,
 		id: string | undefined,
 		type: GitGraphRowType | undefined,
-	) {
+	): GitStashReference | GitRevisionReference | undefined {
 		if (repoPath == null || id == null) return undefined;
 
 		switch (type) {
@@ -1537,7 +1537,11 @@ export class GraphWebview extends WebviewBase<State> {
 				if (remote != null) {
 					ref.avatarUrl = (
 						(useAvatars ? remote.provider?.avatarUri : undefined) ??
-						getRemoteIconUri(this.container, remote, this._panel!.webview.asWebviewUri.bind(this))
+						getRemoteIconUri(
+							this.container,
+							remote,
+							this._panel!.webview.asWebviewUri.bind(this._panel!.webview),
+						)
 					)?.toString(true);
 				}
 			}
@@ -1890,7 +1894,9 @@ export class GraphWebview extends WebviewBase<State> {
 			storedExcludeRefs = updateRecordValue(
 				storedExcludeRefs,
 				ref.id,
-				visible ? undefined : { id: ref.id, type: ref.type, name: ref.name, owner: ref.owner },
+				visible
+					? undefined
+					: { id: ref.id, type: ref.type as StoredGraphRefType, name: ref.name, owner: ref.owner },
 			);
 		}
 
@@ -1920,7 +1926,7 @@ export class GraphWebview extends WebviewBase<State> {
 			for (const ref of refs) {
 				storedIncludeOnlyRefs[ref.id] = {
 					id: ref.id,
-					type: ref.type,
+					type: ref.type as StoredGraphRefType,
 					name: ref.name,
 					owner: ref.owner,
 				};

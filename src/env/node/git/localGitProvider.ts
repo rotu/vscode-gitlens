@@ -2,7 +2,6 @@ import { readdir, realpath } from 'fs';
 import { homedir, hostname, userInfo } from 'os';
 import { resolve as resolvePath } from 'path';
 import { env as process_env } from 'process';
-import { encodingExists } from 'iconv-lite';
 import type { CancellationToken, Event, TextDocument, WorkspaceFolder } from 'vscode';
 import { Disposable, env, EventEmitter, extensions, FileType, Range, Uri, window, workspace } from 'vscode';
 import { md5 } from '@env/crypto';
@@ -15,7 +14,6 @@ import type {
 	GitExtension,
 } from '../../../@types/vscode.git';
 import { getCachedAvatarUri } from '../../../avatars';
-import { configuration } from '../../../configuration';
 import { CoreGitConfiguration, GlyphChars, Schemes } from '../../../constants';
 import type { Container } from '../../../container';
 import { emojify } from '../../../emojis';
@@ -127,9 +125,6 @@ import { getRemoteProviderMatcher, loadRemoteProviders } from '../../../git/remo
 import type { RichRemoteProvider } from '../../../git/remotes/richRemoteProvider';
 import type { GitSearch, GitSearchResultData, GitSearchResults, SearchQuery } from '../../../git/search';
 import { getGitArgsFromSearchQuery, getSearchQueryComparisonKey } from '../../../git/search';
-import { Logger } from '../../../logger';
-import type { LogScope } from '../../../logScope';
-import { getLogScope } from '../../../logScope';
 import {
 	showGenericErrorMessage,
 	showGitDisabledErrorMessage,
@@ -146,10 +141,14 @@ import type {
 } from '../../../plus/webviews/graph/graphWebview';
 import { countStringLength, filterMap } from '../../../system/array';
 import { TimedCancellationSource } from '../../../system/cancellation';
+import { configuration } from '../../../system/configuration';
 import { gate } from '../../../system/decorators/gate';
 import { debug, log } from '../../../system/decorators/log';
 import { debounce } from '../../../system/function';
 import { filterMap as filterMapIterable, find, first, join, last, map, some } from '../../../system/iterable';
+import { Logger } from '../../../system/logger';
+import type { LogScope } from '../../../system/logger.scope';
+import { getLogScope } from '../../../system/logger.scope';
 import {
 	commonBaseIndex,
 	dirname,
@@ -2353,12 +2352,13 @@ export class LocalGitProvider implements GitProvider, Disposable {
 			}
 		}
 
+		const encoding = await getEncoding(uri);
 		const promise = this.getDiffForFileCore(
 			uri.repoPath,
 			uri.fsPath,
 			ref1,
 			ref2,
-			{ encoding: getEncoding(uri) },
+			{ encoding: encoding },
 			doc,
 			key,
 			scope,
@@ -2441,12 +2441,13 @@ export class LocalGitProvider implements GitProvider, Disposable {
 			}
 		}
 
+		const encoding = await getEncoding(uri);
 		const promise = this.getDiffForFileContentsCore(
 			uri.repoPath,
 			uri.fsPath,
 			ref,
 			contents,
-			{ encoding: getEncoding(uri) },
+			{ encoding: encoding },
 			doc,
 			key,
 			scope,
@@ -4861,7 +4862,10 @@ export class LocalGitProvider implements GitProvider, Disposable {
 	}
 }
 
-function getEncoding(uri: Uri): string {
+async function getEncoding(uri: Uri): Promise<string> {
 	const encoding = configuration.getAny<string>('files.encoding', uri);
-	return encoding != null && encodingExists(encoding) ? encoding : 'utf8';
+	if (encoding == null || encoding === 'utf8') return 'utf8';
+
+	const encodingExists = (await import(/* webpackChunkName: "encoding" */ 'iconv-lite')).encodingExists;
+	return encodingExists(encoding) ? encoding : 'utf8';
 }

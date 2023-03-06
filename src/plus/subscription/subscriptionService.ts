@@ -22,14 +22,11 @@ import {
 } from 'vscode';
 import { fetch, getProxyAgent } from '@env/fetch';
 import { getPlatform } from '@env/platform';
-import { configuration } from '../../configuration';
 import { Commands, ContextKeys } from '../../constants';
 import type { Container } from '../../container';
 import { setContext } from '../../context';
 import { AccountValidationError } from '../../errors';
 import type { RepositoriesChangeEvent } from '../../git/gitProviderService';
-import { Logger } from '../../logger';
-import { getLogScope } from '../../logScope';
 import { showMessage } from '../../messages';
 import type { Subscription } from '../../subscription';
 import {
@@ -46,12 +43,15 @@ import {
 	SubscriptionState,
 } from '../../subscription';
 import { executeCommand, registerCommand } from '../../system/command';
+import { configuration } from '../../system/configuration';
 import { createFromDateDelta } from '../../system/date';
 import { gate } from '../../system/decorators/gate';
 import { debug, log } from '../../system/decorators/log';
 import { memoize } from '../../system/decorators/memoize';
 import type { Deferrable } from '../../system/function';
 import { debounce, once } from '../../system/function';
+import { Logger } from '../../system/logger';
+import { getLogScope } from '../../system/logger.scope';
 import { flatten } from '../../system/object';
 import { pluralize } from '../../system/string';
 import { openWalkthrough } from '../../system/utils';
@@ -846,8 +846,23 @@ export class SubscriptionService implements Disposable {
 			};
 		}
 
-		// Check if the preview has expired, if not apply it
-		if (subscription.previewTrial != null && (getTimeRemaining(subscription.previewTrial.expiresOn) ?? 0) > 0) {
+		// If the effective plan has expired, then replace it with the actual plan
+		if (isSubscriptionExpired(subscription)) {
+			subscription = {
+				...subscription,
+				plan: {
+					...subscription.plan,
+					effective: subscription.plan.actual,
+				},
+			};
+		}
+
+		// If we don't have a paid plan (or a non-preview trial), check if the preview trial has expired, if not apply it
+		if (
+			!isSubscriptionPaid(subscription) &&
+			subscription.previewTrial != null &&
+			(getTimeRemaining(subscription.previewTrial.expiresOn) ?? 0) > 0
+		) {
 			subscription = {
 				...subscription,
 				plan: {
@@ -859,17 +874,6 @@ export class SubscriptionService implements Disposable {
 						new Date(subscription.previewTrial.startedOn),
 						new Date(subscription.previewTrial.expiresOn),
 					),
-				},
-			};
-		}
-
-		// If the effective plan has expired, then replace it with the actual plan
-		if (isSubscriptionExpired(subscription)) {
-			subscription = {
-				...subscription,
-				plan: {
-					...subscription.plan,
-					effective: subscription.plan.actual,
 				},
 			};
 		}
@@ -909,7 +913,7 @@ export class SubscriptionService implements Disposable {
 				new Date(subscription.plan.actual.startedOn) >= new Date('2022-02-28T00:00:00.000Z') &&
 				new Date(subscription.plan.actual.startedOn) <= new Date('2022-04-31T00:00:00.000Z')
 			) {
-				showRenewalDiscountNotification(this.container);
+				void showRenewalDiscountNotification(this.container, subscription);
 			}
 		}, 5000);
 
@@ -1174,10 +1178,35 @@ function licenseStatusPriority(status: GKLicense['latestStatus']): number {
 	}
 }
 
-function showRenewalDiscountNotification(container: Container): void {
+async function showRenewalDiscountNotification(
+	container: Container,
+	subscription: Optional<Subscription, 'state'>,
+): Promise<void> {
 	if (container.storage.get('plus:renewalDiscountNotificationShown', false)) return;
 
 	void container.storage.store('plus:renewalDiscountNotificationShown', true);
+
+	if (subscription.plan.effective.cancelled) {
+		const supportUrl = `https://help.gitkraken.com/gitlens/gl-contact-support/?email=${encodeURIComponent(
+			subscription.account!.email!,
+		)}&subject=${encodeURIComponent('GitLens Pro Reactivation Discount')}&content=${encodeURIComponent(
+			'I would like to reactivate my GitLens Pro subscription at the discounted 60% off rate.',
+		)}&issue_category__customer_facing_field_=Billing`;
+
+		const support = { title: 'Contact Support' };
+		const result = await showMessage(
+			'info',
+			`While we are sorry to see that you have cancelled your GitLens+ subscription, we'd like to offer to renew your subscription at your original rate — 60% off as a thank you for being an early adopter of GitLens+. If you'd like to take advantage of this offer, please [Contact Support](${supportUrl}).`,
+			undefined,
+			undefined,
+			support,
+		);
+
+		if (result === support) {
+			void env.openExternal(Uri.parse(supportUrl));
+		}
+		return;
+	}
 
 	void showMessage(
 		'info',

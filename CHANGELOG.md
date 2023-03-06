@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this p
 
 ## [Unreleased]
 
+## [13.3.2] - 2023-03-06
+
+### Changed
+
+- Reduces the size of the GitLens bundle which improves startup time
+  - GitLens' extension bundle for desktop (node) is now ~24% smaller (1.58MB -> 1.21MB)
+  - GitLens' extension bundle for web (vscode.dev/github.dev) is now ~6% smaller (1.32MB -> 1.24MB)
+
+### Fixed
+
+- Fixes [#2533](https://github.com/gitkraken/vscode-gitlens/issues/2533) - Current Branch Only graph filter sometimes fails
+- Fixes [#2504](https://github.com/gitkraken/vscode-gitlens/issues/2504) - Graph header theme colors were referencing the titlebar color properties
+- Fixes [#2527](https://github.com/gitkraken/vscode-gitlens/issues/2527) - shows added files for Open All Changes
+- Fixes [#2530](https://github.com/gitkraken/vscode-gitlens/issues/2530) (potentially) - Error when creating worktrees in certain conditions
+- Fixes an issue where trial status can be shown rather than a purchased license
+
 ## [13.3.1] - 2023-02-24
 
 ### Fixed
@@ -50,9 +66,9 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this p
 ### Changed
 
 - Greatly reduces the size of many of GitLens' bundles which improves startup time
-  - GitLens' extension bundle for desktop (node) is now ~18% smaller
-  - GitLens' extension bundle for web (vscode.dev/github.dev) is now ~37% smaller
-  - GitLens' Commit Graph webview bundle is now ~31% smaller
+  - GitLens' extension bundle for desktop (node) is now ~18% smaller (1.91MB -> 1.57MB)
+  - GitLens' extension bundle for web (vscode.dev/github.dev) is now ~37% smaller (2.05MB -> (1.30MB)
+  - GitLens' Commit Graph webview bundle is now ~31% smaller (1.03MB -> 734KB)
 - Changes the _Contributors_ view to be shown by default on the _GitLens_ sidebar
 
 ### Removed
@@ -4575,7 +4591,8 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this p
 
 - Initial release but still heavily a work in progress.
 
-[unreleased]: https://github.com/gitkraken/vscode-gitlens/compare/v13.3.1...HEAD
+[unreleased]: https://github.com/gitkraken/vscode-gitlens/compare/v13.3.2...HEAD
+[13.3.2]: https://github.com/gitkraken/vscode-gitlens/compare/v13.3.1...gitkraken:v13.3.2
 [13.3.1]: https://github.com/gitkraken/vscode-gitlens/compare/v13.3.0...gitkraken:v13.3.1
 [13.3.0]: https://github.com/gitkraken/vscode-gitlens/compare/v13.2.0...gitkraken:v13.3.0
 [13.2.0]: https://github.com/gitkraken/vscode-gitlens/compare/v13.1.1...gitkraken:v13.2.0

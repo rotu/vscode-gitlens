@@ -2,7 +2,7 @@
 	"name": "gitlens",
 	"displayName": "GitLens — Git supercharged",
 	"description": "Supercharge Git within VS Code — Visualize code authorship at a glance via Git blame annotations and CodeLens, seamlessly navigate and explore Git repositories, gain valuable insights via rich visualizations and powerful comparison commands, and so much more",
-	"version": "13.3.1",
+	"version": "13.3.2",
 	"engines": {
 		"vscode": "^1.72.0"
 	},
@@ -3837,8 +3837,8 @@
 						"order": 70
 					},
 					"gitlens.insiders": {
-						"deprecationMessage": "Deprecated. Use the Insiders edition of GitLens instead",
-						"markdownDeprecationMessage": "Deprecated. Use the [Insiders edition](https://marketplace.visualstudio.com/items?itemName=eamodio.gitlens-insiders) of GitLens instead"
+						"deprecationMessage": "Deprecated. Use the pre-release edition of GitLens instead",
+						"markdownDeprecationMessage": "Deprecated. Use the pre-release of GitLens instead"
 					}
 				}
 			}
@@ -12634,9 +12634,19 @@
 				"when": "gitlens:key:."
 			},
 			{
+				"command": "gitlens.key.alt+enter",
+				"key": "alt+enter",
+				"when": "gitlens:key:alt+enter"
+			},
+			{
+				"command": "gitlens.key.ctrl+enter",
+				"key": "ctrl+enter",
+				"when": "gitlens:key:ctrl+enter"
+			},
+			{
 				"command": "gitlens.key.escape",
 				"key": "escape",
-				"when": "gitlens:key:escape && editorTextFocus && !findWidgetVisible && !renameInputVisible && !suggestWidgetVisible && !isInEmbeddedEditor"
+				"when": "gitlens:key:escape && editorTextFocus && !findWidgetVisible && !quickFixWidgetVisible && !renameInputVisible && !suggestWidgetVisible && !isInEmbeddedEditor"
 			},
 			{
 				"command": "gitlens.gitCommands",
@@ -13320,13 +13330,13 @@
 		"web:tunnel": "npx localtunnel -p 5000",
 		"update-dts": "pushd \"src/@types\" && npx vscode-dts dev && popd",
 		"update-dts:master": "pushd \"src/@types\" && npx vscode-dts master && popd",
-		"update-emoji": "node ./scripts/generateEmojiShortcodeMap.js",
+		"update-emoji": "node ./scripts/generateEmojiShortcodeMap.mjs",
 		"update-licenses": "node ./scripts/generateLicenses.mjs",
 		"-pretest": "yarn run build:tests",
 		"vscode:prepublish": "yarn run bundle"
 	},
 	"dependencies": {
-		"@gitkraken/gitkraken-components": "6.0.3",
+		"@gitkraken/gitkraken-components": "7.0.0",
 		"@microsoft/fast-element": "1.11.0",
 		"@microsoft/fast-react-wrapper": "0.3.16-0",
 		"@octokit/core": "4.2.0",
@@ -13359,7 +13369,7 @@
 		"@types/vscode": "1.72.0",
 		"@typescript-eslint/eslint-plugin": "5.54.0",
 		"@typescript-eslint/parser": "5.54.0",
-		"@vscode/test-electron": "2.2.3",
+		"@vscode/test-electron": "2.3.0",
 		"@vscode/test-web": "0.0.35",
 		"@vscode/vsce": "2.18.0",
 		"circular-dependency-plugin": "5.2.2",
@@ -13370,7 +13380,7 @@
 		"css-loader": "6.7.3",
 		"css-minimizer-webpack-plugin": "4.2.2",
 		"cssnano-preset-advanced": "5.3.10",
-		"esbuild": "0.17.10",
+		"esbuild": "0.17.11",
 		"esbuild-loader": "3.0.1",
 		"esbuild-sass-plugin": "2.6.0",
 		"eslint": "8.35.0",
@@ -13381,12 +13391,13 @@
 		"eslint-plugin-import": "2.27.5",
 		"eslint-plugin-lit": "1.8.2",
 		"fantasticon": "1.2.3",
-		"fork-ts-checker-webpack-plugin": "6.5.2",
+		"fork-ts-checker-webpack-plugin": "6.5.3",
 		"glob": "8.1.0",
 		"html-loader": "4.2.0",
 		"html-webpack-plugin": "5.5.0",
 		"image-minimizer-webpack-plugin": "3.8.1",
 		"license-checker-rseidelsohn": "4.1.1",
+		"lz-string": "1.5.0",
 		"mini-css-extract-plugin": "2.7.2",
 		"mocha": "10.2.0",
 		"prettier": "2.8.4",
@@ -13406,6 +13417,7 @@
 		"webpack-require-from": "1.8.6"
 	},
 	"resolutions": {
+		"iconv-lite": "0.6.3",
 		"node-fetch": "2.6.9",
 		"semver-regex": "4.0.5"
 	}

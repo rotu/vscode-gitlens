@@ -3,21 +3,21 @@ import { Disposable, EventEmitter, ProgressLocation, RelativePattern, Uri, windo
 import { md5 } from '@env/crypto';
 import { ForcePushMode } from '../../@types/vscode.git.enums';
 import type { CreatePullRequestActionContext } from '../../api/gitlens';
-import { configuration } from '../../configuration';
 import { CoreGitCommands, CoreGitConfiguration, Schemes } from '../../constants';
 import type { Container } from '../../container';
 import type { FeatureAccess, Features, PlusFeatures } from '../../features';
-import { getLoggableName, Logger } from '../../logger';
-import { getLogScope } from '../../logScope';
 import { showCreatePullRequestPrompt, showGenericErrorMessage } from '../../messages';
 import { asRepoComparisonKey } from '../../repositories';
 import { filterMap, groupByMap } from '../../system/array';
 import { executeActionCommand, executeCoreGitCommand } from '../../system/command';
+import { configuration } from '../../system/configuration';
 import { formatDate, fromNow } from '../../system/date';
 import { gate } from '../../system/decorators/gate';
 import { debug, log, logName } from '../../system/decorators/log';
 import { debounce } from '../../system/function';
 import { filter, join, some } from '../../system/iterable';
+import { getLoggableName, Logger } from '../../system/logger';
+import { getLogScope } from '../../system/logger.scope';
 import { updateRecordValue } from '../../system/object';
 import { basename, normalizePath } from '../../system/path';
 import { runGitCommandInTerminal } from '../../terminal';
@@ -646,12 +646,17 @@ export class Repository implements Disposable {
 	}
 
 	@gate()
+	@log<Repository['getMainRepository']>({ exit: r => `returned ${r?.path}` })
 	async getMainRepository(): Promise<Repository | undefined> {
 		const gitDir = await this.getGitDir();
 		if (gitDir?.commonUri == null) return this;
 
 		// If the repository isn't already opened, then open it as a "closed" repo (won't show up in the UI)
-		return this.container.git.getOrOpenRepository(gitDir.commonUri, { closeOnOpen: true });
+		return this.container.git.getOrOpenRepository(gitDir.commonUri, {
+			detectNested: false,
+			force: true,
+			closeOnOpen: true,
+		});
 	}
 
 	getMergeStatus(): Promise<GitMergeStatus | undefined> {
@@ -719,6 +724,7 @@ export class Repository implements Disposable {
 		return this.container.git.getTags(this.path, options);
 	}
 
+	@log()
 	async createWorktree(
 		uri: Uri,
 		options?: { commitish?: string; createBranch?: string; detach?: boolean; force?: boolean },
