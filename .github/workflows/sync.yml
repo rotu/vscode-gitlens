@@ -1,10 +1,11 @@
+name: Pull Upstream Changes
 on:
-    workflow_dispatch:    
+    workflow_dispatch:
+    push:
+        branches: main
 jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-        - uses: TobKed/github-forks-sync-action@v0.2.0
-          with:
-            upstream_repository: gitkraken/vscode-gitlens
+     - uses: exions/merge-upstream@v1
         
