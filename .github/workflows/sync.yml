@@ -9,4 +9,8 @@ jobs:
     steps:
      - uses: actions/checkout@v3
      - uses: exions/merge-upstream@v1
-        
+       with:
+        upstream: gitkraken/vscode-gitlens
+        upstream-branch: main
+        branch: main
+
