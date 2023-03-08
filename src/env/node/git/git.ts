@@ -1,5 +1,6 @@
 import type { ChildProcess, SpawnOptions } from 'child_process';
 import { spawn } from 'child_process';
+import { accessSync } from 'fs';
 import * as process from 'process';
 import type { CancellationToken, OutputChannel } from 'vscode';
 import { Uri, window, workspace } from 'vscode';
@@ -596,6 +597,31 @@ export class Git {
 
 			throw ex;
 		}
+	}
+
+	async diff2(
+		repoPath: string,
+		options?: {
+			cancellation?: CancellationToken;
+			configs?: readonly string[];
+			errors?: GitErrorHandling;
+			stdin?: string;
+		},
+		...args: string[]
+	) {
+		return this.git<string>(
+			{
+				cwd: repoPath,
+				cancellation: options?.cancellation,
+				configs: options?.configs ?? gitLogDefaultConfigs,
+				errors: options?.errors,
+				stdin: options?.stdin,
+			},
+			'diff',
+			...(options?.stdin ? ['--stdin'] : emptyArray),
+			...args,
+			...(!args.includes('--') ? ['--'] : emptyArray),
+		);
 	}
 
 	async diff__contents(
@@ -1552,17 +1578,65 @@ export class Git {
 	}
 
 	async rev_parse__show_toplevel(cwd: string): Promise<string | undefined> {
+		let data;
+
+		if (!workspace.isTrusted) {
+			// Check if the folder is a bare clone: if it has a file named HEAD && `rev-parse --show-cdup` is empty
+			try {
+				accessSync(joinPaths(cwd, 'HEAD'));
+				data = await this.git<string>(
+					{ cwd: cwd, errors: GitErrorHandling.Throw, configs: ['-C', cwd] },
+					'rev-parse',
+					'--show-cdup',
+				);
+				if (data.trim() === '') {
+					Logger.log(`Skipping (untrusted workspace); bare clone repository detected in '${cwd}'`);
+					return undefined;
+				}
+			} catch {
+				// If this throw, we should be good to open the repo (e.g. HEAD doesn't exist)
+			}
+		}
+
 		try {
-			const data = await this.git<string>(
-				{ cwd: cwd, errors: GitErrorHandling.Throw },
-				'rev-parse',
-				'--show-toplevel',
-			);
+			data = await this.git<string>({ cwd: cwd, errors: GitErrorHandling.Throw }, 'rev-parse', '--show-toplevel');
 			// Make sure to normalize: https://github.com/git-for-windows/git/issues/2478
 			// Keep trailing spaces which are part of the directory name
-			return data.length === 0 ? undefined : normalizePath(data.trimLeft().replace(/[\r|\n]+$/, ''));
+			return data.length === 0 ? undefined : normalizePath(data.trimStart().replace(/[\r|\n]+$/, ''));
 		} catch (ex) {
+			const unsafeMatch =
+				/^fatal: detected dubious ownership in repository at '([^']+)'[\s\S]*git config --global --add safe\.directory '?([^'\n]+)'?$/m.exec(
+					ex.stderr,
+				);
+			if (unsafeMatch?.length === 3) {
+				Logger.log(
+					`Skipping; unsafe repository detected in '${unsafeMatch[1]}'; run 'git config --global --add safe.directory ${unsafeMatch[2]}' to allow it`,
+				);
+				return undefined;
+			}
+
 			const inDotGit = /this operation must be run in a work tree/.test(ex.stderr);
+			// Check if we are in a bare clone
+			if (inDotGit && workspace.isTrusted) {
+				data = await this.git<string>(
+					{ cwd: cwd, errors: GitErrorHandling.Ignore },
+					'rev-parse',
+					'--is-bare-repository',
+				);
+				if (data.trim() === 'true') {
+					// If we are in a bare clone, then the common dir is the git dir
+					data = await this.git<string>(
+						{ cwd: cwd, errors: GitErrorHandling.Ignore },
+						'rev-parse',
+						'--git-common-dir',
+					);
+					data = data.trim();
+					if (data.length) {
+						return normalizePath((data === '.' ? cwd : data).trimStart().replace(/[\r|\n]+$/, ''));
+					}
+				}
+			}
+
 			if (inDotGit || ex.code === 'ENOENT') {
 				// If the `cwd` doesn't exist, walk backward to see if any parent folder exists
 				let exists = inDotGit ? false : await fsExists(cwd);
