@@ -1,0 +1,16 @@
+name: Pull Upstream Changes
+on:
+    workflow_dispatch:
+    push:
+        branches: main
+jobs:
+    sync:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v3
+            - name: Merge upstream commits
+              run: |
+                git remote add -f gk "https://github.com/gitkraken/vscode-gitlens.git"
+                git merge --ff gk/main
+                git push
