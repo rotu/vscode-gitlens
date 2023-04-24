@@ -7,10 +7,10 @@ import { GitUri } from '../git/gitUri';
 import { uncommittedStaged } from '../git/models/constants';
 import { showGenericErrorMessage } from '../messages';
 import { getBestRepositoryOrShowPicker } from '../quickpicks/repositoryPicker';
-import type { Storage } from '../storage';
 import { command, executeCoreCommand } from '../system/command';
 import { configuration } from '../system/configuration';
 import { Logger } from '../system/logger';
+import type { Storage } from '../system/storage';
 import { supportedInVSCodeVersion } from '../system/utils';
 import { ActiveEditorCommand, Command, getCommandUri } from './base';
 
@@ -247,7 +247,7 @@ export async function confirmSendToOpenAI(storage: Storage): Promise<boolean> {
 	const acceptAlways: MessageItem = { title: 'Always' };
 	const decline: MessageItem = { title: 'No', isCloseAffordance: true };
 	const result = await window.showInformationMessage(
-		'To automatically generate commit messages, the diff of your staged changes is sent to OpenAI. This may contain sensitive information.\n\nDo you want to continue?',
+		'This GitLens experimental feature automatically generates commit messages by sending the diff of your staged changes to OpenAI. This may contain sensitive information.\n\nDo you want to continue?',
 		{ modal: true },
 		accept,
 		acceptWorkspace,

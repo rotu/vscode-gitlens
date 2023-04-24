@@ -498,20 +498,22 @@ export interface MenuConfig {
 				history: boolean;
 				remote: boolean;
 		  };
+	ghpr:
+		| false
+		| {
+				worktree: boolean;
+		  };
 	scm:
 		| false
 		| {
 				graph: boolean;
 		  };
-	scmTitleInline:
-		| false
-		| {
-				graph: boolean;
-		  };
-	scmTitle:
+	scmRepositoryInline: false | { graph: boolean };
+	scmRepository:
 		| false
 		| {
 				authors: boolean;
+				generateCommitMessage: boolean;
 				graph: boolean;
 		  };
 	scmGroupInline:

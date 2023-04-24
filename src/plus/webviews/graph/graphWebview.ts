@@ -12,12 +12,13 @@ import type {
 } from '../../../commands';
 import { parseCommandContext } from '../../../commands/base';
 import type { Config } from '../../../config';
+import type { StoredGraphFilters, StoredGraphIncludeOnlyRef, StoredGraphRefType } from '../../../constants';
 import { Commands, GlyphChars } from '../../../constants';
 import type { Container } from '../../../container';
-import { getContext, onDidChangeContext } from '../../../context';
 import type { CommitSelectedEvent } from '../../../eventBus';
 import { PlusFeatures } from '../../../features';
 import * as BranchActions from '../../../git/actions/branch';
+import { showGraphDetailsView } from '../../../git/actions/commit';
 import * as ContributorActions from '../../../git/actions/contributor';
 import * as RepoActions from '../../../git/actions/repository';
 import * as StashActions from '../../../git/actions/stash';
@@ -56,7 +57,6 @@ import {
 import type { GitSearch } from '../../../git/search';
 import { getSearchQueryComparisonKey } from '../../../git/search';
 import { showRepositoryPicker } from '../../../quickpicks/repositoryPicker';
-import type { StoredGraphFilters, StoredGraphIncludeOnlyRef, StoredGraphRefType } from '../../../storage';
 import {
 	executeActionCommand,
 	executeCommand,
@@ -65,6 +65,7 @@ import {
 	registerCommand,
 } from '../../../system/command';
 import { configuration } from '../../../system/configuration';
+import { getContext, onDidChangeContext } from '../../../system/context';
 import { gate } from '../../../system/decorators/gate';
 import { debug } from '../../../system/decorators/log';
 import type { Deferrable } from '../../../system/function';
@@ -75,7 +76,7 @@ import { getSettledValue } from '../../../system/promise';
 import { isDarkTheme, isLightTheme } from '../../../system/utils';
 import { isWebviewItemContext, isWebviewItemGroupContext, serializeWebviewItemContext } from '../../../system/webview';
 import { RepositoryFolderNode } from '../../../views/nodes/viewNode';
-import type { IpcMessage, IpcMessageParams, IpcNotificationType } from '../../../webviews/protocol';
+import type { IpcMessage, IpcNotificationType } from '../../../webviews/protocol';
 import { onIpc } from '../../../webviews/protocol';
 import type { WebviewController, WebviewProvider } from '../../../webviews/webviewController';
 import type { SubscriptionChangeEvent } from '../../subscription/subscriptionService';
@@ -204,7 +205,17 @@ export class GraphWebviewProvider implements WebviewProvider<State> {
 	private _etagRepository?: number;
 	private _firstSelection = true;
 	private _graph?: GitGraph;
-	private _pendingIpcNotifications = new Map<IpcNotificationType, IpcMessage | (() => Promise<boolean>)>();
+	private readonly _ipcNotificationMap = new Map<IpcNotificationType<any>, () => Promise<boolean>>([
+		[DidChangeColumnsNotificationType, this.notifyDidChangeColumns],
+		[DidChangeGraphConfigurationNotificationType, this.notifyDidChangeConfiguration],
+		[DidChangeNotificationType, this.notifyDidChangeState],
+		[DidChangeRefsVisibilityNotificationType, this.notifyDidChangeRefsVisibility],
+		[DidChangeSelectionNotificationType, this.notifyDidChangeSelection],
+		[DidChangeSubscriptionNotificationType, this.notifyDidChangeSubscription],
+		[DidChangeWorkingTreeNotificationType, this.notifyDidChangeWorkingTree],
+		[DidChangeWindowFocusNotificationType, this.notifyDidChangeWindowFocus],
+		[DidFetchNotificationType, this.notifyDidFetch],
+	]);
 	private _refsMetadata: Map<string, GraphRefMetadata | null> | null | undefined;
 	private _search: GitSearch | undefined;
 	private _searchCancellation: CancellationTokenSource | undefined;
@@ -293,7 +304,6 @@ export class GraphWebviewProvider implements WebviewProvider<State> {
 	onRefresh(force?: boolean) {
 		if (force) {
 			this.resetRepositoryState();
-			this._pendingIpcNotifications.clear();
 		}
 	}
 
@@ -308,6 +318,7 @@ export class GraphWebviewProvider implements WebviewProvider<State> {
 			registerCommand('gitlens.graph.push', this.push, this),
 			registerCommand('gitlens.graph.pull', this.pull, this),
 			registerCommand('gitlens.graph.fetch', this.fetch, this),
+			registerCommand('gitlens.graph.publishBranch', this.publishBranch, this),
 			registerCommand('gitlens.graph.switchToAnotherBranch', this.switchToAnother, this),
 
 			registerCommand('gitlens.graph.createBranch', this.createBranch, this),
@@ -386,10 +397,6 @@ export class GraphWebviewProvider implements WebviewProvider<State> {
 		void this.notifyDidChangeWindowFocus();
 	}
 
-	onReady(): void {
-		this.sendPendingIpcNotifications();
-	}
-
 	onFocusChanged(focused: boolean): void {
 		if (!focused || this.activeSelection == null || !this.container.commitDetailsView.visible) {
 			this._showActiveSelectionDetailsDebounced?.cancel();
@@ -415,7 +422,7 @@ export class GraphWebviewProvider implements WebviewProvider<State> {
 
 		if (visible) {
 			if (this.host.ready) {
-				this.sendPendingIpcNotifications();
+				this.host.sendPendingIpcNotifications();
 			}
 
 			const { activeSelection } = this;
@@ -732,7 +739,7 @@ export class GraphWebviewProvider implements WebviewProvider<State> {
 			}
 		}
 
-		void this.notify(DidEnsureRowNotificationType, { id: id }, completionId);
+		void this.host.notify(DidEnsureRowNotificationType, { id: id }, completionId);
 	}
 
 	private async onGetMissingAvatars(e: GetMissingAvatarsParams) {
@@ -908,7 +915,7 @@ export class GraphWebviewProvider implements WebviewProvider<State> {
 				this._search = search;
 				void (await this.ensureSearchStartsInRange(this._graph!, search));
 
-				void this.notify(
+				void this.host.notify(
 					DidSearchNotificationType,
 					{
 						results:
@@ -951,7 +958,7 @@ export class GraphWebviewProvider implements WebviewProvider<State> {
 			} catch (ex) {
 				this._search = undefined;
 
-				void this.notify(
+				void this.host.notify(
 					DidSearchNotificationType,
 					{
 						results: {
@@ -965,7 +972,7 @@ export class GraphWebviewProvider implements WebviewProvider<State> {
 
 			if (cancellation.token.isCancellationRequested) {
 				if (completionId != null) {
-					void this.notify(DidSearchNotificationType, { results: undefined }, completionId);
+					void this.host.notify(DidSearchNotificationType, { results: undefined }, completionId);
 				}
 				return;
 			}
@@ -983,7 +990,7 @@ export class GraphWebviewProvider implements WebviewProvider<State> {
 			this.setSelectedRows(firstResult);
 		}
 
-		void this.notify(
+		void this.host.notify(
 			DidSearchNotificationType,
 			{
 				results:
@@ -1101,7 +1108,7 @@ export class GraphWebviewProvider implements WebviewProvider<State> {
 
 	@debug()
 	private updateState(immediate: boolean = false) {
-		this._pendingIpcNotifications.clear();
+		this.host.clearPendingIpcNotifications();
 
 		if (immediate) {
 			void this.notifyDidChangeState();
@@ -1118,11 +1125,11 @@ export class GraphWebviewProvider implements WebviewProvider<State> {
 	@debug()
 	private async notifyDidChangeWindowFocus(): Promise<boolean> {
 		if (!this.host.ready || !this.host.visible) {
-			this.addPendingIpcNotification(DidChangeWindowFocusNotificationType);
+			this.host.addPendingIpcNotification(DidChangeWindowFocusNotificationType, this._ipcNotificationMap, this);
 			return false;
 		}
 
-		return this.notify(DidChangeWindowFocusNotificationType, {
+		return this.host.notify(DidChangeWindowFocusNotificationType, {
 			focused: this.isWindowFocused,
 		});
 	}
@@ -1149,7 +1156,7 @@ export class GraphWebviewProvider implements WebviewProvider<State> {
 		if (this._graph == null) return;
 
 		const data = this._graph;
-		return this.notify(DidChangeAvatarsNotificationType, {
+		return this.host.notify(DidChangeAvatarsNotificationType, {
 			avatars: Object.fromEntries(data.avatars),
 		});
 	}
@@ -1174,7 +1181,7 @@ export class GraphWebviewProvider implements WebviewProvider<State> {
 
 	@debug()
 	private async notifyDidChangeRefsMetadata() {
-		return this.notify(DidChangeRefsMetadataNotificationType, {
+		return this.host.notify(DidChangeRefsMetadataNotificationType, {
 			metadata: this._refsMetadata != null ? Object.fromEntries(this._refsMetadata) : this._refsMetadata,
 		});
 	}
@@ -1182,13 +1189,13 @@ export class GraphWebviewProvider implements WebviewProvider<State> {
 	@debug()
 	private async notifyDidChangeColumns() {
 		if (!this.host.ready || !this.host.visible) {
-			this.addPendingIpcNotification(DidChangeColumnsNotificationType);
+			this.host.addPendingIpcNotification(DidChangeColumnsNotificationType, this._ipcNotificationMap, this);
 			return false;
 		}
 
 		const columns = this.getColumns();
 		const columnSettings = this.getColumnSettings(columns);
-		return this.notify(DidChangeColumnsNotificationType, {
+		return this.host.notify(DidChangeColumnsNotificationType, {
 			columns: columnSettings,
 			context: this.getColumnHeaderContext(columnSettings),
 		});
@@ -1197,11 +1204,15 @@ export class GraphWebviewProvider implements WebviewProvider<State> {
 	@debug()
 	private async notifyDidChangeRefsVisibility() {
 		if (!this.host.ready || !this.host.visible) {
-			this.addPendingIpcNotification(DidChangeRefsVisibilityNotificationType);
+			this.host.addPendingIpcNotification(
+				DidChangeRefsVisibilityNotificationType,
+				this._ipcNotificationMap,
+				this,
+			);
 			return false;
 		}
 
-		return this.notify(DidChangeRefsVisibilityNotificationType, {
+		return this.host.notify(DidChangeRefsVisibilityNotificationType, {
 			excludeRefs: this.getExcludedRefs(this._graph),
 			excludeTypes: this.getExcludedTypes(this._graph),
 			includeOnlyRefs: this.getIncludeOnlyRefs(this._graph),
@@ -1211,11 +1222,15 @@ export class GraphWebviewProvider implements WebviewProvider<State> {
 	@debug()
 	private async notifyDidChangeConfiguration() {
 		if (!this.host.ready || !this.host.visible) {
-			this.addPendingIpcNotification(DidChangeGraphConfigurationNotificationType);
+			this.host.addPendingIpcNotification(
+				DidChangeGraphConfigurationNotificationType,
+				this._ipcNotificationMap,
+				this,
+			);
 			return false;
 		}
 
-		return this.notify(DidChangeGraphConfigurationNotificationType, {
+		return this.host.notify(DidChangeGraphConfigurationNotificationType, {
 			config: this.getComponentConfig(),
 		});
 	}
@@ -1223,12 +1238,12 @@ export class GraphWebviewProvider implements WebviewProvider<State> {
 	@debug()
 	private async notifyDidFetch() {
 		if (!this.host.ready || !this.host.visible) {
-			this.addPendingIpcNotification(DidFetchNotificationType);
+			this.host.addPendingIpcNotification(DidFetchNotificationType, this._ipcNotificationMap, this);
 			return false;
 		}
 
 		const lastFetched = await this.repository!.getLastFetched();
-		return this.notify(DidFetchNotificationType, {
+		return this.host.notify(DidFetchNotificationType, {
 			lastFetched: new Date(lastFetched),
 		});
 	}
@@ -1238,7 +1253,7 @@ export class GraphWebviewProvider implements WebviewProvider<State> {
 		if (this._graph == null) return;
 
 		const data = this._graph;
-		return this.notify(
+		return this.host.notify(
 			DidChangeRowsNotificationType,
 			{
 				rows: data.rows,
@@ -1258,11 +1273,11 @@ export class GraphWebviewProvider implements WebviewProvider<State> {
 	@debug()
 	private async notifyDidChangeWorkingTree() {
 		if (!this.host.ready || !this.host.visible) {
-			this.addPendingIpcNotification(DidChangeWorkingTreeNotificationType);
+			this.host.addPendingIpcNotification(DidChangeWorkingTreeNotificationType, this._ipcNotificationMap, this);
 			return false;
 		}
 
-		return this.notify(DidChangeWorkingTreeNotificationType, {
+		return this.host.notify(DidChangeWorkingTreeNotificationType, {
 			stats: (await this.getWorkingTreeStats()) ?? { added: 0, deleted: 0, modified: 0 },
 		});
 	}
@@ -1270,11 +1285,11 @@ export class GraphWebviewProvider implements WebviewProvider<State> {
 	@debug()
 	private async notifyDidChangeSelection() {
 		if (!this.host.ready || !this.host.visible) {
-			this.addPendingIpcNotification(DidChangeSelectionNotificationType);
+			this.host.addPendingIpcNotification(DidChangeSelectionNotificationType, this._ipcNotificationMap, this);
 			return false;
 		}
 
-		return this.notify(DidChangeSelectionNotificationType, {
+		return this.host.notify(DidChangeSelectionNotificationType, {
 			selection: this._selectedRows ?? {},
 		});
 	}
@@ -1282,12 +1297,12 @@ export class GraphWebviewProvider implements WebviewProvider<State> {
 	@debug()
 	private async notifyDidChangeSubscription() {
 		if (!this.host.ready || !this.host.visible) {
-			this.addPendingIpcNotification(DidChangeSubscriptionNotificationType);
+			this.host.addPendingIpcNotification(DidChangeSubscriptionNotificationType, this._ipcNotificationMap, this);
 			return false;
 		}
 
 		const [access] = await this.getGraphAccess();
-		return this.notify(DidChangeSubscriptionNotificationType, {
+		return this.host.notify(DidChangeSubscriptionNotificationType, {
 			subscription: access.subscription.current,
 			allowed: access.allowed !== false,
 		});
@@ -1296,77 +1311,11 @@ export class GraphWebviewProvider implements WebviewProvider<State> {
 	@debug()
 	private async notifyDidChangeState() {
 		if (!this.host.ready || !this.host.visible) {
-			this.addPendingIpcNotification(DidChangeNotificationType);
+			this.host.addPendingIpcNotification(DidChangeNotificationType, this._ipcNotificationMap, this);
 			return false;
 		}
 
-		return this.notify(DidChangeNotificationType, { state: await this.getState() });
-	}
-
-	private async notify<T extends IpcNotificationType<any>>(
-		type: T,
-		params: IpcMessageParams<T>,
-		completionId?: string,
-	): Promise<boolean> {
-		const msg: IpcMessage = {
-			id: this.host.nextIpcId(),
-			method: type.method,
-			params: params,
-			completionId: completionId,
-		};
-		const success = await this.host.postMessage(msg);
-		if (success) {
-			this._pendingIpcNotifications.clear();
-		} else {
-			this.addPendingIpcNotification(type, msg);
-		}
-		return success;
-	}
-
-	private readonly _ipcNotificationMap = new Map<IpcNotificationType<any>, () => Promise<boolean>>([
-		[DidChangeColumnsNotificationType, this.notifyDidChangeColumns],
-		[DidChangeGraphConfigurationNotificationType, this.notifyDidChangeConfiguration],
-		[DidChangeNotificationType, this.notifyDidChangeState],
-		[DidChangeRefsVisibilityNotificationType, this.notifyDidChangeRefsVisibility],
-		[DidChangeSelectionNotificationType, this.notifyDidChangeSelection],
-		[DidChangeSubscriptionNotificationType, this.notifyDidChangeSubscription],
-		[DidChangeWorkingTreeNotificationType, this.notifyDidChangeWorkingTree],
-		[DidChangeWindowFocusNotificationType, this.notifyDidChangeWindowFocus],
-		[DidFetchNotificationType, this.notifyDidFetch],
-	]);
-
-	private addPendingIpcNotification(type: IpcNotificationType<any>, msg?: IpcMessage) {
-		if (type === DidChangeNotificationType) {
-			this._pendingIpcNotifications.clear();
-		} else if (type.overwriteable) {
-			this._pendingIpcNotifications.delete(type);
-		}
-
-		let msgOrFn: IpcMessage | (() => Promise<boolean>) | undefined;
-		if (msg == null) {
-			msgOrFn = this._ipcNotificationMap.get(type)?.bind(this);
-			if (msgOrFn == null) {
-				debugger;
-				return;
-			}
-		} else {
-			msgOrFn = msg;
-		}
-		this._pendingIpcNotifications.set(type, msgOrFn);
-	}
-
-	private sendPendingIpcNotifications() {
-		if (this._pendingIpcNotifications.size === 0) return;
-
-		const ipcs = new Map(this._pendingIpcNotifications);
-		this._pendingIpcNotifications.clear();
-		for (const msgOrFn of ipcs.values()) {
-			if (typeof msgOrFn === 'function') {
-				void msgOrFn();
-			} else {
-				void this.host.postMessage(msgOrFn);
-			}
-		}
+		return this.host.notify(DidChangeNotificationType, { state: await this.getState() });
 	}
 
 	private ensureRepositorySubscriptions(force?: boolean) {
@@ -2018,6 +1967,16 @@ export class GraphWebviewProvider implements WebviewProvider<State> {
 	}
 
 	@debug()
+	private publishBranch(item?: GraphItemContext) {
+		if (isGraphItemRefContext(item, 'branch')) {
+			const { ref } = item.webviewItemValue;
+			return RepoActions.push(ref.repoPath, undefined, ref);
+		}
+
+		return Promise.resolve();
+	}
+
+	@debug()
 	private rebase(item?: GraphItemContext) {
 		const ref = this.getGraphItemRef(item);
 		if (ref == null) return Promise.resolve();
@@ -2111,6 +2070,10 @@ export class GraphWebviewProvider implements WebviewProvider<State> {
 	private openInDetailsView(item?: GraphItemContext) {
 		const ref = this.getGraphItemRef(item, 'revision');
 		if (ref == null) return Promise.resolve();
+
+		if (this.host.isView()) {
+			return void showGraphDetailsView(ref, { preserveFocus: true, preserveVisibility: false });
+		}
 
 		return executeCommand<ShowCommitsInViewCommandArgs>(Commands.ShowInDetailsView, {
 			repoPath: ref.repoPath,
@@ -2541,13 +2504,15 @@ function formatRepositories(repositories: Repository[]): GraphRepository[] {
 function isGraphItemContext(item: unknown): item is GraphItemContext {
 	if (item == null) return false;
 
-	return isWebviewItemContext(item) && item.webview === 'gitlens.graph';
+	return isWebviewItemContext(item) && (item.webview === 'gitlens.graph' || item.webview === 'gitlens.views.graph');
 }
 
 function isGraphItemGroupContext(item: unknown): item is GraphItemGroupContext {
 	if (item == null) return false;
 
-	return isWebviewItemGroupContext(item) && item.webview === 'gitlens.graph';
+	return (
+		isWebviewItemGroupContext(item) && (item.webview === 'gitlens.graph' || item.webview === 'gitlens.views.graph')
+	);
 }
 
 function isGraphItemTypedContext(

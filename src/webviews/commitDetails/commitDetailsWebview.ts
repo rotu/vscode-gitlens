@@ -5,7 +5,6 @@ import type { CopyShaToClipboardCommandArgs } from '../../commands';
 import type { CoreConfiguration } from '../../constants';
 import { Commands } from '../../constants';
 import type { Container } from '../../container';
-import { getContext } from '../../context';
 import type { CommitSelectedEvent } from '../../eventBus';
 import { executeGitCommand } from '../../git/actions';
 import {
@@ -30,6 +29,7 @@ import type { GitRemote } from '../../git/models/remote';
 import type { ShowInCommitGraphCommandArgs } from '../../plus/webviews/graph/protocol';
 import { executeCommand, executeCoreCommand } from '../../system/command';
 import { configuration } from '../../system/configuration';
+import { getContext } from '../../system/context';
 import type { DateTimeFormat } from '../../system/date';
 import { debug } from '../../system/decorators/log';
 import type { Deferrable } from '../../system/function';
@@ -46,6 +46,7 @@ import type { LinesChangeEvent } from '../../trackers/lineTracker';
 import type { IpcMessage } from '../protocol';
 import { onIpc } from '../protocol';
 import type { WebviewController, WebviewProvider } from '../webviewController';
+import { updatePendingContext } from '../webviewController';
 import type { CommitDetails, FileActionParams, Preferences, State } from './protocol';
 import {
 	AutolinkSettingsCommandType,
@@ -176,14 +177,18 @@ export class CommitDetailsWebviewProvider implements WebviewProvider<State, Seri
 	private onCommitSelected(e: CommitSelectedEvent) {
 		if (
 			e.data == null ||
-			(this._pinned && e.data.interaction === 'passive') ||
 			(this.options.mode === 'graph' && e.source !== 'gitlens.views.graph') ||
 			(this.options.mode === 'default' && e.source === 'gitlens.views.graph')
 		) {
 			return;
 		}
 
-		void this.host.show(false, { preserveFocus: e.data.preserveFocus }, e.data);
+		if (this._pinned && e.data.interaction === 'passive') {
+			this._commitStack.insert(getReferenceFromRevision(e.data.commit));
+			this.updateNavigation();
+		} else {
+			void this.host.show(false, { preserveFocus: e.data.preserveFocus }, e.data);
+		}
 	}
 
 	includeBootstrap(): Promise<Serialized<State>> {
@@ -276,13 +281,11 @@ export class CommitDetailsWebviewProvider implements WebviewProvider<State, Seri
 		this._lineTrackerDisposable?.dispose();
 		this._lineTrackerDisposable = undefined;
 
-		if (this._pinned || !this.host.visible) return;
+		if (!this.host.visible) return;
 
-		this._commitTrackerDisposable = this.container.events.on(
-			'commit:selected',
-			debounce(this.onCommitSelected, 50),
-			this,
-		);
+		this._commitTrackerDisposable = this.container.events.on('commit:selected', this.onCommitSelected, this);
+
+		if (this._pinned) return;
 
 		if (this.options.mode !== 'graph') {
 			const { lineTracker } = this.container;
@@ -294,7 +297,7 @@ export class CommitDetailsWebviewProvider implements WebviewProvider<State, Seri
 	}
 
 	private get isLineTrackerSuspended() {
-		return this._lineTrackerDisposable == null;
+		return this.options.mode !== 'graph' ? this._lineTrackerDisposable == null : false;
 	}
 
 	private suspendLineTracker() {
@@ -441,6 +444,7 @@ export class CommitDetailsWebviewProvider implements WebviewProvider<State, Seri
 		return state;
 	}
 
+	@debug({ args: false })
 	private async updateRichState(current: Context, cancellation: CancellationToken): Promise<void> {
 		const { commit } = current;
 		if (commit == null) return;
@@ -555,17 +559,7 @@ export class CommitDetailsWebviewProvider implements WebviewProvider<State, Seri
 				this._commitStack.add(getReferenceFromRevision(commit));
 			}
 
-			let sha = this._commitStack.get(this._commitStack.position + 1)?.ref;
-			if (sha != null) {
-				sha = shortenRevision(sha);
-			}
-			this.updatePendingContext({
-				navigationStack: {
-					count: this._commitStack.count,
-					position: this._commitStack.position,
-					hint: sha,
-				},
-			});
+			this.updateNavigation();
 		}
 		this.updateState(options?.immediate ?? true);
 	}
@@ -640,32 +634,9 @@ export class CommitDetailsWebviewProvider implements WebviewProvider<State, Seri
 	}
 
 	private updatePendingContext(context: Partial<Context>, force: boolean = false): boolean {
-		let changed = false;
-		for (const [key, value] of Object.entries(context)) {
-			const current = (this._context as unknown as Record<string, unknown>)[key];
-			if (
-				!force &&
-				(current instanceof Uri || value instanceof Uri) &&
-				(current as any)?.toString() === value?.toString()
-			) {
-				continue;
-			}
-
-			if (!force && current === value) {
-				if (
-					(value !== undefined || key in this._context) &&
-					(this._pendingContext == null || !(key in this._pendingContext))
-				) {
-					continue;
-				}
-			}
-
-			if (this._pendingContext == null) {
-				this._pendingContext = {};
-			}
-
-			(this._pendingContext as Record<string, unknown>)[key] = value;
-			changed = true;
+		const [changed, pending] = updatePendingContext(this._context, this._pendingContext, context, force);
+		if (changed) {
+			this._pendingContext = pending;
 		}
 
 		return changed;
@@ -674,8 +645,6 @@ export class CommitDetailsWebviewProvider implements WebviewProvider<State, Seri
 	private _notifyDidChangeStateDebounced: Deferrable<() => void> | undefined = undefined;
 
 	private updateState(immediate: boolean = false) {
-		if (!this.host.ready || !this.host.visible) return;
-
 		if (immediate) {
 			void this.notifyDidChangeState();
 			return;
@@ -688,9 +657,22 @@ export class CommitDetailsWebviewProvider implements WebviewProvider<State, Seri
 		this._notifyDidChangeStateDebounced();
 	}
 
-	private async notifyDidChangeState() {
-		if (!this.host.ready || !this.host.visible) return false;
+	private updateNavigation() {
+		let sha = this._commitStack.get(this._commitStack.position - 1)?.ref;
+		if (sha != null) {
+			sha = shortenRevision(sha);
+		}
+		this.updatePendingContext({
+			navigationStack: {
+				count: this._commitStack.count,
+				position: this._commitStack.position,
+				hint: sha,
+			},
+		});
+		this.updateState();
+	}
 
+	private async notifyDidChangeState() {
 		const scope = getLogScope();
 
 		this._notifyDidChangeStateDebounced?.cancel();
@@ -728,7 +710,7 @@ export class CommitDetailsWebviewProvider implements WebviewProvider<State, Seri
 
 		let commit;
 
-		if (window.activeTextEditor != null) {
+		if (this.options.mode !== 'graph' && window.activeTextEditor != null) {
 			const { lineTracker } = this.container;
 			const line = lineTracker.selections?.[0].active;
 			if (line != null) {

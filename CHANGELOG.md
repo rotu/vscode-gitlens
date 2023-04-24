@@ -6,30 +6,49 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this p
 
 ## [Unreleased]
 
+## [13.5.0] - 2023-04-07
+
 ### Added
 
-- Adds experimental support to show the _Commit Graph_ in the side bar, secondary side bar, or panel
-  - Adds a `gitlens.graph.experimental.location` setting to specify the location in which the _Commit Graph_ will be shown
-    - `tab` - Shows the _Commit Graph_ in a tab in the editor area
-    - `view` - Shows the _Commit Graph_ in the side bar and can be dragged and dropped into any side bar, secondary side bar, or panel locations
+- Adds the ability to switch to an alternate panel layout for the _Commit Graph_ &mdash; closes [#2602](https://github.com/gitkraken/vscode-gitlens/issues/2602) and [#2537](https://github.com/gitkraken/vscode-gitlens/issues/2537)
+  - Adds a new context menu from the _Commit Graph Settings_ (cog) to switch between the "Editor" and "Panel" layouts
+  - Adds a `gitlens.graph.layout` setting to specify the layout of the _Commit Graph_
+    - `editor` - Shows the _Commit Graph_ in an editor tab
+    - `panel` - Shows the _Commit Graph_ in the bottom panel with an additional _Commit Graph Details_ view alongside on the right
 - Adds new _Commit Graph_ features and improvements
-  - Adds a "Compact" layout to the Graph column of the _Commit Graph_
-    - Adds a context menu option to the header to toggle between the "Compact" and "Default" layouts
+  - Adds a compact layout to the Graph column of the _Commit Graph_
+    - Adds a context menu option to the header to toggle between the "Compact" and "Default" layouts &mdash; closes [#2611](https://github.com/gitkraken/vscode-gitlens/pull/2611)
   - Shows pull request icons on local branches when their upstream branch is associated with a pull request
-  - Adds tooltips to WIP and stash nodes
+  - Adds tooltips to work-in-progress (WIP) and stash nodes
+  - Adds a "Publish Branch" context menu action to local branches without an upstream branch &mdash; closes [#2619](https://github.com/gitkraken/vscode-gitlens/pull/2619)
+  - Lowers the minimum width of the "Branch / Tag" column
+- Adds actions to _Focus View_ Pull Requests
+  - Switch to or create a local branch
+  - Create or open a worktree from the branch
+- Adds a _Generate Commit Message (Experimental)..._ command to the SCM context menus
 
 ### Changed
 
+- Reduces the size of the GitLens (desktop) bundle which reduces memory usage and improves startup time &mdash; ~7% smaller (1.21MB -> 1.13MB)
+  - Consolidates the "extension" side of all the GitLens webviews/webview-views into a unified controller and code-splits each webview/webview-view into its own bundle
+    - Allows for very minimal code to be loaded for each webview/webview-view until its used, so if you never use a webview you never "pay" the cost of loading it
 - Changes _Open Associated Pull Request_ command to support opening associated pull requests with the current branch or the HEAD commit if no branch association was found &mdash; closes [#2559](https://github.com/gitkraken/vscode-gitlens/issues/2559)
-- Changes the appearance of the _Commit Details_ pinned state to be more apparaent
+- Improves the "pinning" of the _Commit Details_ view
+  - Avoids automatically pinning
+  - Changes the pinned state to be much more apparent
+- Changes _Commit Details_ to always open diffs in the same editor group as the currently active editor &mdash; closes [#2537](https://github.com/gitkraken/vscode-gitlens/issues/2537)
 
 ### Fixed
 
+- Fixes [#2597](https://github.com/gitkraken/vscode-gitlens/issues/2597) - Allow disabling "Open worktree for pull request via GitLens..." from repository context menu
+- Fixes [#2612](https://github.com/gitkraken/vscode-gitlens/issues/2612) - Clarify GitLens telemetry settings
 - Fixes [#2583](https://github.com/gitkraken/vscode-gitlens/issues/2583) - Regression with _Open Worktree for Pull Request via GitLens..._ command
 - Fixes [#2252](https://github.com/gitkraken/vscode-gitlens/issues/2252) - "Copy As"/"Copy Remote File Url" copies %23 instead of # in case of Gitea &mdash; thanks to [PR #2603](https://github.com/gitkraken/vscode-gitlens/pull/2603) by WofWca ([@WofWca](https://github.com/WofWca))
 - Fixes [#2582](https://github.com/gitkraken/vscode-gitlens/issues/2582) - _Visual File History_ background color when in a panel
 - Fixes [#2609](https://github.com/gitkraken/vscode-gitlens/issues/2609) - If you check out a branch that is hidden, GitLens should show the branch still
+- Fixes [#2595](https://github.com/gitkraken/vscode-gitlens/issues/2595) - Error when stashing changes
 - Fixes tooltips sometimes failing to show in _Commit Graph_ rows when the Date column is hidden
+- Fixes an issue with incorrectly showing associated pull requests with branches that are partial matches of the true branch the pull request is associated with
 
 ## [13.4.0] - 2023-03-16
 
@@ -4647,7 +4666,8 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this p
 
 - Initial release but still heavily a work in progress.
 
-[unreleased]: https://github.com/gitkraken/vscode-gitlens/compare/v13.4.0...HEAD
+[unreleased]: https://github.com/gitkraken/vscode-gitlens/compare/v13.5.0...HEAD
+[13.5.0]: https://github.com/gitkraken/vscode-gitlens/compare/v13.4.0...gitkraken:v13.5.0
 [13.4.0]: https://github.com/gitkraken/vscode-gitlens/compare/v13.3.2...gitkraken:v13.4.0
 [13.3.2]: https://github.com/gitkraken/vscode-gitlens/compare/v13.3.1...gitkraken:v13.3.2
 [13.3.1]: https://github.com/gitkraken/vscode-gitlens/compare/v13.3.0...gitkraken:v13.3.1

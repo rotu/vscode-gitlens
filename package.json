@@ -2,7 +2,7 @@
 	"name": "gitlens",
 	"displayName": "GitLens — Git supercharged",
 	"description": "Supercharge Git within VS Code — Visualize code authorship at a glance via Git blame annotations and CodeLens, seamlessly navigate and explore Git repositories, gain valuable insights via rich visualizations and powerful comparison commands, and so much more",
-	"version": "13.4.0",
+	"version": "13.5.0",
 	"engines": {
 		"vscode": "^1.72.0"
 	},
@@ -2396,7 +2396,7 @@
 							"Shows the Commit Graph in an editor tab",
 							"Shows the Commit Graph in the bottom panel"
 						],
-						"markdownDescription": "Specifies the location in which the _Commit Graph_ will be shown",
+						"markdownDescription": "Specifies the layout of the _Commit Graph_",
 						"scope": "window",
 						"order": 99
 					},
@@ -3049,6 +3049,23 @@
 											}
 										]
 									},
+									"ghpr": {
+										"anyOf": [
+											{
+												"enum": [
+													false
+												]
+											},
+											{
+												"type": "object",
+												"properties": {
+													"worktree": {
+														"type": "boolean"
+													}
+												}
+											}
+										]
+									},
 									"scm": {
 										"anyOf": [
 											{
@@ -3094,6 +3111,9 @@
 												"type": "object",
 												"properties": {
 													"authors": {
+														"type": "boolean"
+													},
+													"generateCommitMessage": {
 														"type": "boolean"
 													},
 													"graph": {
@@ -3217,6 +3237,9 @@
 								"history": true,
 								"remote": true
 							},
+							"ghpr": {
+								"worktree": true
+							},
 							"scm": {
 								"graph": true
 							},
@@ -3225,6 +3248,7 @@
 							},
 							"scmRepository": {
 								"authors": true,
+								"generateCommitMessage": true,
 								"graph": false
 							},
 							"scmGroupInline": {
@@ -4452,7 +4476,7 @@
 		"commands": [
 			{
 				"command": "gitlens.generateCommitMessage",
-				"title": "Generate Commit Message (Experimental)",
+				"title": "Generate Commit Message (Experimental)...",
 				"category": "GitLens"
 			},
 			{
@@ -6975,6 +6999,13 @@
 				"enablement": "!operationInProgress"
 			},
 			{
+				"command": "gitlens.graph.publishBranch",
+				"title": "Publish Branch",
+				"category": "GitLens",
+				"icon": "$(cloud-upload)",
+				"enablement": "!operationInProgress"
+			},
+			{
 				"command": "gitlens.graph.rebaseOntoBranch",
 				"title": "Rebase Current Branch onto Branch...",
 				"category": "GitLens",
@@ -9181,6 +9212,10 @@
 					"when": "false"
 				},
 				{
+					"command": "gitlens.graph.publishBranch",
+					"when": "false"
+				},
+				{
 					"command": "gitlens.graph.rebaseOntoBranch",
 					"when": "false"
 				},
@@ -9370,7 +9405,7 @@
 				},
 				{
 					"command": "gitlens.generateCommitMessage",
-					"when": "gitlens:enabled"
+					"when": "gitlens:enabled && !gitlens:readonly && !gitlens:untrusted && !gitlens:hasVirtualFolders"
 				},
 				{
 					"command": "gitlens.resetOpenAIKey",
@@ -9717,6 +9752,11 @@
 					"command": "gitlens.addAuthors",
 					"when": "gitlens:enabled && !gitlens:readonly && !gitlens:untrusted && !gitlens:hasVirtualFolders && config.gitlens.menus.scmRepository.authors",
 					"group": "4_gitlens@1"
+				},
+				{
+					"command": "gitlens.generateCommitMessage",
+					"when": "gitlens:enabled && !gitlens:readonly && !gitlens:untrusted && !gitlens:hasVirtualFolders && config.gitlens.menus.scmRepository.generateCommitMessage",
+					"group": "4_gitlens@2"
 				}
 			],
 			"menuBar/edit/copy": [
@@ -9746,13 +9786,18 @@
 				},
 				{
 					"command": "gitlens.addAuthors",
-					"when": "gitlens:enabled && !gitlens:readonly && !gitlens:untrusted && !gitlens:hasVirtualFolders && config.gitlens.menus.scmRepository.authors && scmProvider == git",
+					"when": "gitlens:enabled && !gitlens:readonly && !gitlens:untrusted && !gitlens:hasVirtualFolders && scmProvider == git && config.gitlens.menus.scmRepository.authors",
 					"group": "2_z_gitlens@1"
+				},
+				{
+					"command": "gitlens.generateCommitMessage",
+					"when": "gitlens:enabled && !gitlens:readonly && !gitlens:untrusted && !gitlens:hasVirtualFolders && scmProvider == git && config.gitlens.menus.scmRepository.generateCommitMessage",
+					"group": "2_z_gitlens@2"
 				},
 				{
 					"command": "gitlens.showGraph",
 					"when": "gitlens:enabled && config.gitlens.menus.scmRepository.graph && gitlens:plus:enabled && scmProvider == git && scmProviderRootUri not in gitlens:plus:disallowedRepos",
-					"group": "2_z_gitlens@2"
+					"group": "2_z_gitlens@3"
 				}
 			],
 			"scm/resourceGroup/context": [
@@ -11849,7 +11894,7 @@
 				},
 				{
 					"command": "gitlens.ghpr.views.openOrCreateWorktree",
-					"when": "!gitlens:readonly && !gitlens:untrusted && !gitlens:hasVirtualFolders && view == pr:github && viewItem =~ /pullrequest(:local)?:nonactive|description/",
+					"when": "!gitlens:readonly && !gitlens:untrusted && !gitlens:hasVirtualFolders && view == pr:github && viewItem =~ /pullrequest(:local)?:nonactive|description/ && config.gitlens.menus.ghpr.worktree",
 					"group": "2_gitlens@1"
 				}
 			],
@@ -11934,6 +11979,11 @@
 					"when": "gitlens:hasRemotes && webviewItem =~ /gitlens:branch\\b(?=.*?\\b\\+(tracking|remote)\\b)/",
 					"group": "2_gitlens_quickopen@1",
 					"alt": "gitlens.copyRemoteBranchUrl"
+				},
+				{
+					"command": "gitlens.graph.publishBranch",
+					"when": "gitlens:hasRemotes && !gitlens:readonly && !gitlens:untrusted && !gitlens:hasVirtualFolders && webviewItem =~ /gitlens:branch\\b(?!.*?\\b\\+remote\\b)(?!.*?\\b\\+tracking\\b)/",
+					"group": "8_gitlens_actions@13"
 				},
 				{
 					"command": "gitlens.graph.cherryPick",
@@ -13545,7 +13595,7 @@
 		"vscode:prepublish": "yarn run bundle"
 	},
 	"dependencies": {
-		"@gitkraken/gitkraken-components": "8.1.1",
+		"@gitkraken/gitkraken-components": "8.1.3",
 		"@microsoft/fast-element": "1.11.0",
 		"@microsoft/fast-react-wrapper": "0.3.16-0",
 		"@octokit/core": "4.2.0",
@@ -13555,10 +13605,10 @@
 		"@vscode/codicons": "0.0.32",
 		"@vscode/webview-ui-toolkit": "1.2.2",
 		"ansi-regex": "6.0.1",
-		"billboard.js": "3.7.4",
+		"billboard.js": "3.8.0-next.2",
 		"https-proxy-agent": "5.0.1",
 		"iconv-lite": "0.6.3",
-		"lit": "2.7.1",
+		"lit": "2.7.2",
 		"node-fetch": "2.6.9",
 		"os-browserify": "0.3.0",
 		"path-browserify": "1.0.1",
@@ -13577,7 +13627,7 @@
 		"@typescript-eslint/eslint-plugin": "5.57.1",
 		"@typescript-eslint/parser": "5.57.1",
 		"@vscode/test-electron": "2.3.0",
-		"@vscode/test-web": "0.0.37",
+		"@vscode/test-web": "0.0.41",
 		"@vscode/vsce": "2.18.0",
 		"circular-dependency-plugin": "5.2.2",
 		"clean-webpack-plugin": "4.0.0",
@@ -13587,13 +13637,13 @@
 		"css-loader": "6.7.3",
 		"css-minimizer-webpack-plugin": "5.0.0",
 		"cssnano-preset-advanced": "6.0.0",
-		"esbuild": "0.17.15",
+		"esbuild": "0.17.16",
 		"esbuild-loader": "3.0.1",
 		"esbuild-sass-plugin": "2.8.0",
-		"eslint": "8.37.0",
+		"eslint": "8.38.0",
 		"eslint-cli": "1.1.1",
 		"eslint-config-prettier": "8.8.0",
-		"eslint-import-resolver-typescript": "3.5.3",
+		"eslint-import-resolver-typescript": "3.5.5",
 		"eslint-plugin-anti-trojan-source": "1.1.1",
 		"eslint-plugin-import": "2.27.5",
 		"eslint-plugin-lit": "1.8.2",
@@ -13608,7 +13658,7 @@
 		"mini-css-extract-plugin": "2.7.5",
 		"mocha": "10.2.0",
 		"prettier": "2.8.7",
-		"sass": "1.60.0",
+		"sass": "1.61.0",
 		"sass-loader": "13.2.2",
 		"schema-utils": "4.0.0",
 		"sharp": "0.32.0",
@@ -13616,8 +13666,8 @@
 		"terser-webpack-plugin": "5.3.7",
 		"ts-loader": "9.4.2",
 		"tsc-alias": "1.8.5",
-		"typescript": "5.0.3",
-		"webpack": "5.77.0",
+		"typescript": "5.0.4",
+		"webpack": "5.78.0",
 		"webpack-bundle-analyzer": "4.8.0",
 		"webpack-cli": "5.0.1",
 		"webpack-node-externals": "3.0.0",

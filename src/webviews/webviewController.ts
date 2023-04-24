@@ -1,17 +1,10 @@
-import type {
-	Disposable,
-	Webview,
-	WebviewPanel,
-	WebviewPanelOnDidChangeViewStateEvent,
-	WebviewView,
-	WindowState,
-} from 'vscode';
-import { EventEmitter, Uri, ViewColumn, window, workspace } from 'vscode';
+import type { Webview, WebviewPanel, WebviewView, WindowState } from 'vscode';
+import { Disposable, EventEmitter, Uri, ViewColumn, window, workspace } from 'vscode';
 import { getNonce } from '@env/crypto';
 import type { Commands, CustomEditorIds, WebviewIds, WebviewViewIds } from '../constants';
 import type { Container } from '../container';
-import { setContext } from '../context';
 import { executeCommand } from '../system/command';
+import { setContext } from '../system/context';
 import { debug, logName } from '../system/decorators/log';
 import { serialize } from '../system/decorators/serialize';
 import { isPromise } from '../system/promise';
@@ -72,7 +65,7 @@ type WebviewViewController<State, SerializedState = State> = WebviewController<
 	WebviewViewDescriptor
 >;
 
-@logName<WebviewController<any>>((c, name) => `${name}(${c.id})`)
+@logName<WebviewController<any>>(c => `WebviewController(${c.id})`)
 export class WebviewController<
 	State,
 	SerializedState = State,
@@ -124,12 +117,11 @@ export class WebviewController<
 	public readonly id: Descriptor['id'];
 
 	private _ready: boolean = false;
-	private _suspended: boolean = false;
 	get ready() {
 		return this._ready;
 	}
 
-	private readonly disposables: Disposable[] = [];
+	private disposable: Disposable | undefined;
 	private /*readonly*/ provider!: WebviewProvider<State, SerializedState>;
 	private readonly webview: Webview;
 
@@ -152,12 +144,19 @@ export class WebviewController<
 
 		this._initializing = resolveProvider(container, this).then(provider => {
 			this.provider = provider;
-			this.disposables.push(
+			if (this._disposed) {
+				provider.dispose();
+				return;
+			}
+
+			this.disposable = Disposable.from(
 				window.onDidChangeWindowState(this.onWindowStateChanged, this),
 				parent.webview.onDidReceiveMessage(this.onMessageReceivedCore, this),
 				isInEditor
-					? parent.onDidChangeViewState(this.onParentViewStateChanged, this)
-					: parent.onDidChangeVisibility(() => this.onParentVisibilityChanged(this.visible), this),
+					? parent.onDidChangeViewState(({ webviewPanel: { visible, active } }) =>
+							this.onParentVisibilityChanged(visible, active),
+					  )
+					: parent.onDidChangeVisibility(() => this.onParentVisibilityChanged(this.visible)),
 				parent.onDidDispose(this.onParentDisposed, this),
 				...(this.provider.registerCommands?.() ?? []),
 				this.provider,
@@ -165,17 +164,18 @@ export class WebviewController<
 		});
 	}
 
+	private _disposed: boolean = false;
 	dispose() {
+		this._disposed = true;
 		resetContextKeys(this.descriptor.contextKeyPrefix);
 
-		this.provider.onFocusChanged?.(false);
-		this.provider.onVisibilityChanged?.(false);
+		this.provider?.onFocusChanged?.(false);
+		this.provider?.onVisibilityChanged?.(false);
 
 		this._ready = false;
-		this._suspended = false;
 
 		this._onDidDispose.fire();
-		this.disposables.forEach(d => void d.dispose());
+		this.disposable?.dispose();
 	}
 
 	private _initializing: Promise<void> | undefined;
@@ -221,9 +221,10 @@ export class WebviewController<
 	}
 
 	get visible() {
-		return this.parent.visible;
+		return this._disposed ? false : this.parent.visible;
 	}
 
+	@debug()
 	async show(loading: boolean, options?: { column?: ViewColumn; preserveFocus?: boolean }, ...args: unknown[]) {
 		if (options == null) {
 			options = {};
@@ -268,11 +269,13 @@ export class WebviewController<
 
 	@debug()
 	async refresh(force?: boolean): Promise<void> {
+		if (force) {
+			this.clearPendingIpcNotifications();
+		}
 		this.provider.onRefresh?.(force);
 
 		// Mark the webview as not ready, until we know if we are changing the html
 		this._ready = false;
-		this._suspended = false;
 
 		const html = await this.getHtml(this.webview);
 		if (force) {
@@ -289,6 +292,7 @@ export class WebviewController<
 		this.webview.html = html;
 	}
 
+	@debug()
 	private onParentDisposed() {
 		this.dispose();
 	}
@@ -303,7 +307,7 @@ export class WebviewController<
 			case WebviewReadyCommandType.method:
 				onIpc(WebviewReadyCommandType, e, () => {
 					this._ready = true;
-					this._suspended = false;
+					this.sendPendingIpcNotifications();
 					this.provider.onReady?.();
 				});
 
@@ -340,62 +344,37 @@ export class WebviewController<
 		this.provider.onFocusChanged?.(e.focused);
 	}
 
-	@debug<WebviewController<State>['onParentViewStateChanged']>({
-		args: { 0: e => `active=${e.webviewPanel.active}, visible=${e.webviewPanel.visible}` },
-	})
-	private onParentViewStateChanged(e: WebviewPanelOnDidChangeViewStateEvent): void {
-		const { active, visible } = e.webviewPanel;
-
-		if (this.descriptor.webviewHostOptions?.retainContextWhenHidden !== true) {
-			if (visible) {
-				if (this._suspended) {
-					this._ready = true;
-					this._suspended = false;
-					this.provider.onReady?.();
-				}
-			} else {
-				this._ready = false;
-				this._suspended = true;
-			}
-		}
-
-		if (visible) {
-			setContextKeys(this.descriptor.contextKeyPrefix, active);
-			this.provider.onActiveChanged?.(active);
-			if (!active) {
-				this.provider.onFocusChanged?.(false);
-			}
-		} else {
-			resetContextKeys(this.descriptor.contextKeyPrefix);
-
-			this.provider.onActiveChanged?.(false);
-			this.provider.onFocusChanged?.(false);
-		}
-
-		this.provider.onVisibilityChanged?.(visible);
-	}
-
 	@debug()
-	private onParentVisibilityChanged(visible: boolean) {
+	private onParentVisibilityChanged(visible: boolean, active?: boolean) {
 		if (this.descriptor.webviewHostOptions?.retainContextWhenHidden !== true) {
 			if (visible) {
-				if (this._suspended) {
-					this._ready = true;
-					this._suspended = false;
-					this.provider.onReady?.();
+				if (this._ready) {
+					this.sendPendingIpcNotifications();
 				}
 			} else {
 				this._ready = false;
-				this._suspended = true;
 			}
 		}
 
 		if (visible) {
 			void this.container.usage.track(`${this.descriptor.trackingFeature}:shown`);
+
+			if (active != null) {
+				setContextKeys(this.descriptor.contextKeyPrefix, active);
+				this.provider.onActiveChanged?.(active);
+				if (!active) {
+					this.provider.onFocusChanged?.(false);
+				}
+			}
 		} else {
 			resetContextKeys(this.descriptor.contextKeyPrefix);
+
+			if (active != null) {
+				this.provider.onActiveChanged?.(false);
+			}
 			this.provider.onFocusChanged?.(false);
 		}
+
 		this.provider.onVisibilityChanged?.(visible);
 	}
 
@@ -456,17 +435,24 @@ export class WebviewController<
 		return nextIpcId();
 	}
 
-	notify<T extends IpcNotificationType<any>>(
+	async notify<T extends IpcNotificationType<any>>(
 		type: T,
 		params: IpcMessageParams<T>,
 		completionId?: string,
 	): Promise<boolean> {
-		return this.postMessage({
+		const msg: IpcMessage = {
 			id: this.nextIpcId(),
 			method: type.method,
 			params: params,
 			completionId: completionId,
-		});
+		};
+		const success = await this.postMessage(msg);
+		if (success) {
+			this._pendingIpcNotifications.clear();
+		} else {
+			this.addPendingIpcNotificationCore(type, msg);
+		}
+		return success;
 	}
 
 	@serialize()
@@ -475,7 +461,7 @@ export class WebviewController<
 			0: m => `{"id":${m.id},"method":${m.method}${m.completionId ? `,"completionId":${m.completionId}` : ''}}`,
 		},
 	})
-	async postMessage(message: IpcMessage): Promise<boolean> {
+	private async postMessage(message: IpcMessage): Promise<boolean> {
 		if (!this._ready) return Promise.resolve(false);
 
 		// It looks like there is a bug where `postMessage` can sometimes just hang infinitely. Not sure why, but ensure we don't hang
@@ -484,6 +470,49 @@ export class WebviewController<
 			new Promise<boolean>(resolve => setTimeout(resolve, 5000, false)),
 		]);
 		return success;
+	}
+
+	private _pendingIpcNotifications = new Map<IpcNotificationType, IpcMessage | (() => Promise<boolean>)>();
+
+	addPendingIpcNotification(
+		type: IpcNotificationType<any>,
+		mapping: Map<IpcNotificationType<any>, () => Promise<boolean>>,
+		thisArg: any,
+	) {
+		this.addPendingIpcNotificationCore(type, mapping.get(type)?.bind(thisArg));
+	}
+
+	private addPendingIpcNotificationCore(
+		type: IpcNotificationType<any>,
+		msgOrFn: IpcMessage | (() => Promise<boolean>) | undefined,
+	) {
+		if (type.reset) {
+			this._pendingIpcNotifications.clear();
+		}
+
+		if (msgOrFn == null) {
+			debugger;
+			return;
+		}
+		this._pendingIpcNotifications.set(type, msgOrFn);
+	}
+
+	clearPendingIpcNotifications() {
+		this._pendingIpcNotifications.clear();
+	}
+
+	sendPendingIpcNotifications() {
+		if (this._pendingIpcNotifications.size === 0) return;
+
+		const ipcs = new Map(this._pendingIpcNotifications);
+		this._pendingIpcNotifications.clear();
+		for (const msgOrFn of ipcs.values()) {
+			if (typeof msgOrFn === 'function') {
+				void msgOrFn();
+			} else {
+				void this.postMessage(msgOrFn);
+			}
+		}
 	}
 }
 
@@ -565,4 +594,38 @@ export function setContextKeys(
 	if (inputFocus != null) {
 		void setContext(`${contextKeyPrefix}:inputFocus`, inputFocus);
 	}
+}
+
+export function updatePendingContext<Context extends object>(
+	current: Context,
+	pending: Partial<Context> | undefined,
+	update: Partial<Context>,
+	force: boolean = false,
+): [changed: boolean, pending: Partial<Context> | undefined] {
+	let changed = false;
+	for (const [key, value] of Object.entries(update)) {
+		const currentValue = (current as unknown as Record<string, unknown>)[key];
+		if (
+			!force &&
+			(currentValue instanceof Uri || value instanceof Uri) &&
+			(currentValue as any)?.toString() === value?.toString()
+		) {
+			continue;
+		}
+
+		if (!force && currentValue === value) {
+			if ((value !== undefined || key in current) && (pending == null || !(key in pending))) {
+				continue;
+			}
+		}
+
+		if (pending == null) {
+			pending = {};
+		}
+
+		(pending as Record<string, unknown>)[key] = value;
+		changed = true;
+	}
+
+	return [changed, pending];
 }

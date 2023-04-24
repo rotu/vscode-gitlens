@@ -13,14 +13,13 @@ export class MRU<T> {
 	}
 
 	add(item: T): void {
-		const index =
-			this.comparator != null ? this.stack.findIndex(i => this.comparator!(item, i)) : this.stack.indexOf(item);
-
 		if (this._position > 0) {
 			this.stack.splice(0, this._position);
 			this._position = 0;
 		}
 
+		const index =
+			this.comparator != null ? this.stack.findIndex(i => this.comparator!(item, i)) : this.stack.indexOf(item);
 		if (index !== -1) {
 			this.stack.splice(index, 1);
 		} else if (this.stack.length === this.maxSize) {
@@ -37,6 +36,15 @@ export class MRU<T> {
 			return this.stack[position];
 		}
 		return this.stack.length > 0 ? this.stack[0] : undefined;
+	}
+
+	insert(item: T): void {
+		if (this._position > 0) {
+			this.stack.splice(0, this._position);
+			this._position = 0;
+		}
+		this.stack.unshift(item);
+		this._position++;
 	}
 
 	navigate(direction: 'back' | 'forward'): T | undefined {
