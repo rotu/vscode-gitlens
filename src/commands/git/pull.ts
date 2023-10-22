@@ -19,15 +19,9 @@ import type {
 	StepSelection,
 	StepState,
 } from '../quickCommand';
-import {
-	appendReposToTitle,
-	canPickStepContinue,
-	endSteps,
-	FetchQuickInputButton,
-	pickRepositoriesStep,
-	QuickCommand,
-	StepResultBreak,
-} from '../quickCommand';
+import { canPickStepContinue, endSteps, QuickCommand, StepResultBreak } from '../quickCommand';
+import { FetchQuickInputButton } from '../quickCommand.buttons';
+import { appendReposToTitle, pickRepositoriesStep } from '../quickCommand.steps';
 
 interface Context {
 	repos: Repository[];
@@ -107,7 +101,9 @@ export class PullGitCommand extends QuickCommand<State> {
 				skippedStepOne = false;
 				if (context.repos.length === 1) {
 					skippedStepOne = true;
-					state.counter++;
+					if (state.repos == null) {
+						state.counter++;
+					}
 
 					state.repos = [context.repos[0]];
 				} else {

@@ -1,7 +1,6 @@
 import type { Range, Uri } from 'vscode';
 import type { DynamicAutolinkReference } from '../../annotations/autolinks';
 import type { AutolinkReference } from '../../config';
-import { AutolinkType } from '../../config';
 import { isSha } from '../models/reference';
 import type { Repository } from '../models/repository';
 import { RemoteProvider } from './remoteProvider';
@@ -23,7 +22,7 @@ export class GiteaRemote extends RemoteProvider {
 					url: `${this.baseUrl}/issues/<num>`,
 					title: `Open Issue #<num> on ${this.name}`,
 
-					type: AutolinkType.Issue,
+					type: 'issue',
 					description: `${this.name} Issue #<num>`,
 				},
 			];
@@ -144,9 +143,9 @@ export class GiteaRemote extends RemoteProvider {
 			line = '';
 		}
 
-		if (sha) return this.encodeUrl(`${this.baseUrl}/src/commit/${sha}/${fileName}${line}`);
-		if (branch) return this.encodeUrl(`${this.baseUrl}/src/branch/${branch}/${fileName}${line}`);
+		if (sha) return `${this.encodeUrl(`${this.baseUrl}/src/commit/${sha}/${fileName}`)}${line}`;
+		if (branch) return `${this.encodeUrl(`${this.baseUrl}/src/branch/${branch}/${fileName}`)}${line}`;
 		// this route is deprecated but there is no alternative
-		return this.encodeUrl(`${this.baseUrl}/src/${fileName}${line}`);
+		return `${this.encodeUrl(`${this.baseUrl}/src/${fileName}`)}${line}`;
 	}
 }

@@ -1,7 +1,9 @@
 import { attr, css, customElement, FASTElement, html, observable, ref, volatile, when } from '@microsoft/fast-element';
 import type { SearchQuery } from '../../../../../git/search';
+import type { Deferrable } from '../../../../../system/function';
 import { debounce } from '../../../../../system/function';
 import '../code-icon';
+import type { PopMenu } from '../overlays/pop-menu';
 
 export type SearchOperators =
 	| '=:'
@@ -17,7 +19,6 @@ export type SearchOperators =
 
 export type HelpTypes = 'message:' | 'author:' | 'commit:' | 'file:' | 'change:';
 
-const searchRegex = /(?:^|(?<= ))(=:|message:|@:|author:|#:|commit:|\?:|file:|~:|change:)/gi;
 const operatorsHelpMap = new Map<SearchOperators, HelpTypes>([
 	['=:', 'message:'],
 	['message:', 'message:'],
@@ -34,21 +35,56 @@ const operatorsHelpMap = new Map<SearchOperators, HelpTypes>([
 // match case is disabled unless regex is true
 const template = html<SearchInput>`
 	<template role="search">
-		<label
-			for="search"
-			aria-controls="helper"
-			aria-expanded="${x => x.showHelp}"
-			@click="${(x, c) => x.handleShowHelper(c.event)}"
-		>
-			<code-icon icon="search" aria-label="${x => x.label}" title="${x => x.label}"></code-icon>
-			<code-icon class="icon-small" icon="chevron-down" aria-hidden="true"></code-icon>
-		</label>
+		<pop-menu ${ref('popmenu')} style="margin-left: -0.25rem;">
+			<button
+				type="button"
+				class="action-button"
+				slot="trigger"
+				aria-label="${x => x.label}"
+				title="${x => x.label}"
+			>
+				<code-icon icon="search" aria-hidden="true"></code-icon>
+				<code-icon class="action-button__more" icon="chevron-down" aria-hidden="true"></code-icon>
+			</button>
+			<menu-list slot="content">
+				<menu-label>Search by</menu-label>
+				<menu-item role="none">
+					<button class="menu-button" type="button" @click="${(x, _c) => x.handleInsertToken('@me')}">
+						My changes <small>@me</small>
+					</button>
+				</menu-item>
+				<menu-item role="none">
+					<button class="menu-button" type="button" @click="${(x, _c) => x.handleInsertToken('message:')}">
+						Message <small>message: or =:</small>
+					</button>
+				</menu-item>
+				<menu-item role="none">
+					<button class="menu-button" type="button" @click="${(x, _c) => x.handleInsertToken('author:')}">
+						Author <small>author: or @:</small>
+					</button>
+				</menu-item>
+				<menu-item role="none">
+					<button class="menu-button" type="button" @click="${(x, _c) => x.handleInsertToken('commit:')}">
+						Commit SHA <small>commit: or #:</small>
+					</button>
+				</menu-item>
+				<menu-item role="none">
+					<button class="menu-button" type="button" @click="${(x, _c) => x.handleInsertToken('file:')}">
+						File <small>file: or ?:</small>
+					</button>
+				</menu-item>
+				<menu-item role="none">
+					<button class="menu-button" type="button" @click="${(x, _c) => x.handleInsertToken('change:')}">
+						Change <small>change: or ~:</small>
+					</button>
+				</menu-item>
+			</menu-list>
+		</pop-menu>
 		<div class="field">
 			<input
 				${ref('input')}
 				id="search"
 				part="search"
-				class="${x => (x.showHelp ? 'has-helper' : '')}"
 				type="text"
 				spellcheck="false"
 				placeholder="${x => x.placeholder}"
@@ -145,27 +181,6 @@ const template = html<SearchInput>`
 				<code-icon icon="regex"></code-icon>
 			</button>
 		</div>
-		<div class="helper" id="helper" tabindex="-1" ${ref('helper')}>
-			<p class="helper-label">Search by</p>
-			<button class="helper-button" type="button" @click="${(x, _c) => x.handleInsertToken('@me')}">
-				My changes <small>@me</small>
-			</button>
-			<button class="helper-button" type="button" @click="${(x, _c) => x.handleInsertToken('message:')}">
-				Message <small>message: or =:</small>
-			</button>
-			<button class="helper-button" type="button" @click="${(x, _c) => x.handleInsertToken('author:')}">
-				Author <small>author: or @:</small>
-			</button>
-			<button class="helper-button" type="button" @click="${(x, _c) => x.handleInsertToken('commit:')}">
-				Commit SHA <small>commit: or #:</small>
-			</button>
-			<button class="helper-button" type="button" @click="${(x, _c) => x.handleInsertToken('file:')}">
-				File <small>file: or ?:</small>
-			</button>
-			<button class="helper-button" type="button" @click="${(x, _c) => x.handleInsertToken('change:')}">
-				Change <small>change: or ~:</small>
-			</button>
-		</div>
 	</template>
 `;
 
@@ -193,9 +208,14 @@ const styles = css`
 		height: 2.4rem;
 		color: var(--vscode-input-foreground);
 		cursor: pointer;
+		border-radius: 3px;
 	}
 	label:hover {
-		background-color: var(--vscode-input-background);
+		background-color: var(--vscode-toolbar-hoverBackground);
+	}
+	label:focus {
+		outline: 1px solid var(--vscode-focusBorder);
+		outline-offset: -1px;
 	}
 
 	.icon-small {
@@ -322,46 +342,89 @@ const styles = css`
 		display: none;
 	}
 
-	.helper {
-		display: none;
-		position: absolute;
-		top: 100%;
-		left: 0;
-		z-index: 5000;
-		width: fit-content;
-		background-color: var(--vscode-menu-background);
-		border: 1px solid var(--vscode-menu-border);
-		outline: none;
-	}
-	label[aria-expanded='true'] ~ .helper {
-		display: block;
-	}
-
-	.helper-label {
-		text-transform: uppercase;
-		font-size: 0.84em;
+	.action-button {
+		position: relative;
+		appearance: none;
+		font-family: inherit;
+		font-size: 1.2rem;
 		line-height: 2.2rem;
-		padding-left: 0.6rem;
-		padding-right: 0.6rem;
-		margin: 0;
-		opacity: 0.6;
+		// background-color: var(--color-graph-actionbar-background);
+		background-color: transparent;
+		border: none;
+		color: inherit;
+		color: var(--color-foreground);
+		padding: 0 0.75rem;
+		cursor: pointer;
+		border-radius: 3px;
+		height: auto;
+
+		display: grid;
+		grid-auto-flow: column;
+		grid-gap: 0.5rem;
+		gap: 0.5rem;
+		max-width: fit-content;
 	}
 
-	.helper-button {
+	.action-button[disabled] {
+		pointer-events: none;
+		cursor: default;
+		opacity: 1;
+	}
+
+	.action-button:hover {
+		background-color: var(--color-graph-actionbar-selectedBackground);
+		color: var(--color-foreground);
+		text-decoration: none;
+	}
+
+	.action-button[aria-checked] {
+		border: 1px solid transparent;
+	}
+
+	.action-button[aria-checked='true'] {
+		background-color: var(--vscode-inputOption-activeBackground);
+		color: var(--vscode-inputOption-activeForeground);
+		border-color: var(--vscode-inputOption-activeBorder);
+	}
+
+	.action-button code-icon,
+	.action-button .codicon[class*='codicon-'],
+	.action-button .glicon[class*='glicon-'] {
+		line-height: 2.2rem;
+		vertical-align: bottom;
+	}
+
+	.action-button__more,
+	.action-button__more.codicon[class*='codicon-'] {
+		font-size: 1rem;
+		margin-right: -0.25rem;
+	}
+
+	.action-button__more::before {
+		margin-left: -0.25rem;
+	}
+
+	menu-item {
+		padding: 0 0.5rem;
+	}
+
+	menu-list {
+		padding-bottom: 0.5rem;
+	}
+
+	.menu-button {
 		display: block;
 		width: 100%;
-		padding-left: 0.6rem;
-		padding-right: 0.6rem;
+		padding: 0.1rem 0.6rem 0 0.6rem;
 		line-height: 2.2rem;
 		text-align: left;
 		color: var(--vscode-menu-foreground);
+		border-radius: 3px;
 	}
-	.helper-button:hover {
+
+	.menu-button:hover {
 		color: var(--vscode-menu-selectionForeground);
 		background-color: var(--vscode-menu-selectionBackground);
-	}
-	.helper-button small {
-		opacity: 0.5;
 	}
 `;
 
@@ -371,8 +434,8 @@ const styles = css`
 	styles: styles,
 })
 export class SearchInput extends FASTElement {
-	@observable
-	showHelp = false;
+	input!: HTMLInputElement;
+	popmenu!: PopMenu;
 
 	@observable
 	errorMessage = '';
@@ -403,34 +466,12 @@ export class SearchInput extends FASTElement {
 		return this.matchRegex ? this.matchCase : true;
 	}
 
-	input!: HTMLInputElement;
-	helper!: HTMLElement;
-
-	override connectedCallback() {
-		super.connectedCallback();
-		document.addEventListener('click', this.handleDocumentClick.bind(this));
-	}
-
-	override disconnectedCallback() {
-		super.disconnectedCallback();
-		document.removeEventListener('click', this.handleDocumentClick.bind(this));
-	}
-
 	override focus(options?: FocusOptions): void {
 		this.input.focus(options);
 	}
 
-	handleDocumentClick(e: MouseEvent) {
-		if (this.showHelp === false) return;
-
-		const composedPath = e.composedPath();
-		if (!composedPath.includes(this)) {
-			this.showHelp = false;
-		}
-	}
-
 	handleFocus(_e: Event) {
-		this.showHelp = false;
+		this.popmenu.close();
 	}
 
 	handleClear(_e: Event) {
@@ -438,29 +479,47 @@ export class SearchInput extends FASTElement {
 		this.debouncedEmitSearch();
 	}
 
+	private _updateHelpTextDebounced: Deferrable<SearchInput['updateHelpText']> | undefined;
 	updateHelpText() {
-		if (this.input == null || this.value === '' || !this.value.includes(':') || this.input.selectionStart == null) {
-			this.helpType = undefined;
-			return;
+		if (this._updateHelpTextDebounced == null) {
+			this._updateHelpTextDebounced = debounce(this.updateHelpTextCore.bind(this), 200);
 		}
 
-		const query = getSubstringFromCursor(this.value, this.input.selectionStart, this.input.selectionEnd);
-		const helpOperator = query ? getHelpOperatorsFromQuery(query) : undefined;
-
-		// console.log('updateHelpText operator', helpOperator, 'start', this.input.selectionStart, 'end', this.input.selectionEnd);
-		this.helpType = helpOperator;
+		this._updateHelpTextDebounced();
 	}
 
-	debouncedUpdateHelpText = debounce(this.updateHelpText.bind(this), 200);
+	updateHelpTextCore() {
+		const cursor = this.input?.selectionStart;
+		const value = this.value;
+		if (cursor != null && value.length !== 0 && value.includes(':')) {
+			const regex =
+				/(?:^|[\b\s]*)((=:|message:|@:|author:|#:|commit:|\?:|file:|~:|change:)(?:"[^"]*"?|\w*))(?:$|[\b\s])/gi;
+
+			let match;
+			do {
+				match = regex.exec(value);
+				if (match == null) break;
+
+				const [, part, op] = match;
+
+				console.log('updateHelpText', cursor, match.index, match.index + part.trim().length, match);
+				if (cursor > match.index && cursor <= match.index + part.trim().length) {
+					this.helpType = operatorsHelpMap.get(op as SearchOperators);
+					return;
+				}
+			} while (true);
+		}
+		this.helpType = undefined;
+	}
 
 	handleInputClick(_e: MouseEvent) {
-		this.debouncedUpdateHelpText();
+		this.updateHelpText();
 	}
 
 	handleInput(e: InputEvent) {
 		const value = (e.target as HTMLInputElement)?.value;
 		this.value = value;
-		this.debouncedUpdateHelpText();
+		this.updateHelpText();
 		this.debouncedEmitSearch();
 	}
 
@@ -480,7 +539,7 @@ export class SearchInput extends FASTElement {
 	}
 
 	handleKeyup(_e: KeyboardEvent) {
-		this.debouncedUpdateHelpText();
+		this.updateHelpText();
 	}
 
 	handleShortcutKeys(e: KeyboardEvent) {
@@ -501,7 +560,7 @@ export class SearchInput extends FASTElement {
 				const value = this.searchHistory[nextPos];
 				if (value !== this.value) {
 					this.value = value;
-					this.debouncedUpdateHelpText();
+					this.updateHelpText();
 					this.debouncedEmitSearch();
 				}
 			}
@@ -510,19 +569,10 @@ export class SearchInput extends FASTElement {
 		return false;
 	}
 
-	handleShowHelper(_e: Event) {
-		this.showHelp = !this.showHelp;
-		if (this.showHelp) {
-			window.requestAnimationFrame(() => {
-				this.helper.focus();
-			});
-		}
-	}
-
 	handleInsertToken(token: string) {
 		this.value += `${this.value.length > 0 ? ' ' : ''}${token}`;
 		window.requestAnimationFrame(() => {
-			this.debouncedUpdateHelpText();
+			this.updateHelpText();
 			// `@me` can be searched right away since it doesn't need additional text
 			if (token === '@me') {
 				this.debouncedEmitSearch();
@@ -559,40 +609,4 @@ export class SearchInput extends FASTElement {
 		this.searchHistory.push(query.query);
 		this.searchHistoryPos = this.searchHistory.length - 1;
 	}
-}
-
-function getSubstringFromCursor(value: string, start: number | null, end: number | null): string | undefined {
-	if (value === '' || !value.includes(':') || start === null) {
-		return;
-	}
-
-	const len = value.length;
-	const cursor = end === null ? start : Math.max(start, end);
-	if (cursor === len) {
-		return value;
-	}
-
-	let query = cursor === 0 ? '' : value.substring(0, cursor);
-	if (cursor < len - 1) {
-		const next = value.charAt(cursor);
-		if (next !== ' ') {
-			// If the cursor is touching a word, include that word in the query
-			const match = /^[^\s]+/gi.exec(value.substring(cursor));
-			if (match !== null) {
-				query += match[0];
-			}
-		}
-	}
-
-	return query;
-}
-
-function getHelpOperatorsFromQuery(value: string): HelpTypes | undefined {
-	const matches = value.match(searchRegex);
-	if (matches === null) {
-		return;
-	}
-
-	const operator = operatorsHelpMap.get(matches.pop() as SearchOperators);
-	return operator;
 }

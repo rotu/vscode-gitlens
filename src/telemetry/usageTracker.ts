@@ -1,8 +1,8 @@
 import type { Disposable, Event } from 'vscode';
 import { EventEmitter } from 'vscode';
 import type { Container } from '../container';
-import type { Storage } from '../storage';
 import { updateRecordValue } from '../system/object';
+import type { Storage } from '../system/storage';
 
 export interface TrackedUsage {
 	count: number;
@@ -11,11 +11,15 @@ export interface TrackedUsage {
 }
 
 export type TrackedUsageFeatures =
+	| 'accountView'
 	| 'branchesView'
 	| 'commitDetailsView'
 	| 'commitsView'
 	| 'contributorsView'
 	| 'fileHistoryView'
+	| 'focusWebview'
+	| 'graphDetailsView'
+	| 'graphView'
 	| 'graphWebview'
 	| 'homeView'
 	| 'lineHistoryView'
@@ -29,8 +33,7 @@ export type TrackedUsageFeatures =
 	| 'timelineWebview'
 	| 'timelineView'
 	| 'welcomeWebview'
-	| 'workspaceView'
-	| 'focusWebview';
+	| 'workspaceView';
 export type TrackedUsageKeys = `${TrackedUsageFeatures}:shown`;
 
 export type UsageChangeEvent = {
@@ -47,7 +50,10 @@ export class UsageTracker implements Disposable {
 		return this._onDidChange.event;
 	}
 
-	constructor(private readonly container: Container, private readonly storage: Storage) {}
+	constructor(
+		private readonly container: Container,
+		private readonly storage: Storage,
+	) {}
 
 	dispose(): void {}
 

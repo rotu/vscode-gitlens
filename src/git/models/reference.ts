@@ -1,6 +1,7 @@
 import { GlyphChars } from '../../constants';
 import { configuration } from '../../system/configuration';
-import { getBranchNameWithoutRemote, getRemoteNameFromBranchName, splitBranchNameAndRemote } from './branch';
+import { capitalize } from '../../system/string';
+import { getBranchNameWithoutRemote, getRemoteNameFromBranchName, getRemoteNameSlashIndex } from './branch';
 import { deletedOrMissing, uncommitted, uncommittedStaged } from './constants';
 
 const rangeRegex = /^(\S*?)(\.\.\.?)(\S*)\s*$/;
@@ -128,6 +129,7 @@ export interface GitStashReference {
 	number: string | undefined;
 
 	message?: string | undefined;
+	stashOnRef?: string | undefined;
 }
 
 export interface GitTagReference {
@@ -159,7 +161,7 @@ export function createReference(
 export function createReference(
 	ref: string,
 	repoPath: string,
-	options: { refType: 'stash'; name: string; number: string | undefined; message?: string },
+	options: { refType: 'stash'; name: string; number: string | undefined; message?: string; stashOnRef?: string },
 ): GitStashReference;
 export function createReference(
 	ref: string,
@@ -178,7 +180,7 @@ export function createReference(
 				upstream?: { name: string; missing: boolean };
 		  }
 		| { refType?: 'revision'; name?: string; message?: string }
-		| { refType: 'stash'; name: string; number: string | undefined; message?: string }
+		| { refType: 'stash'; name: string; number: string | undefined; message?: string; stashOnRef?: string }
 		| { id?: string; refType: 'tag'; name: string } = { refType: 'revision' },
 ): GitReference {
 	switch (options.refType) {
@@ -200,6 +202,7 @@ export function createReference(
 				name: options.name,
 				number: options.number,
 				message: options.message,
+				stashOnRef: options.stashOnRef,
 			};
 		case 'tag':
 			return {
@@ -262,6 +265,22 @@ export function getNameWithoutRemote(ref: GitReference) {
 	return ref.name;
 }
 
+export function getBranchTrackingWithoutRemote(ref: GitBranchReference) {
+	return ref.upstream?.name.substring(getRemoteNameSlashIndex(ref.upstream.name) + 1);
+}
+
+export function isGitReference(ref: unknown): ref is GitReference {
+	if (ref == null || typeof ref !== 'object') return false;
+
+	const r = ref as GitReference;
+	return (
+		typeof r.refType === 'string' &&
+		typeof r.repoPath === 'string' &&
+		typeof r.ref === 'string' &&
+		typeof r.name === 'string'
+	);
+}
+
 export function isBranchReference(ref: GitReference | undefined): ref is GitBranchReference {
 	return ref?.refType === 'branch';
 }
@@ -317,7 +336,7 @@ export function getReferenceLabel(
 				if (isStashReference(ref)) {
 					let message;
 					if (options.expand && ref.message) {
-						message = `${ref.number != null ? `${ref.number}: ` : ''}${
+						message = `${ref.number != null ? `#${ref.number}: ` : ''}${
 							ref.message.length > 20
 								? `${ref.message.substring(0, 20).trimRight()}${GlyphChars.Ellipsis}`
 								: ref.message
@@ -327,7 +346,7 @@ export function getReferenceLabel(
 					result = `${options.label ? 'stash ' : ''}${
 						options.icon
 							? `$(archive)${GlyphChars.Space}${message ?? ref.name}`
-							: `${message ?? ref.number ?? ref.name}`
+							: `${message ?? (ref.number ? `#${ref.number}` : ref.name)}`
 					}`;
 				} else if (isRevisionRange(ref.ref)) {
 					result = refName;
@@ -361,9 +380,7 @@ export function getReferenceLabel(
 			}
 		}
 
-		return options.capitalize && options.expand && options.label !== false
-			? `${result[0].toLocaleUpperCase()}${result.substring(1)}`
-			: result;
+		return options.capitalize && options.expand && options.label !== false ? capitalize(result) : result;
 	}
 
 	const expanded = options.expand ? ` (${refs.map(r => r.name).join(', ')})` : '';
@@ -375,11 +392,4 @@ export function getReferenceLabel(
 		default:
 			return `${refs.length} ${isStashReference(refs[0]) ? 'stashes' : 'commits'}${expanded}`;
 	}
-}
-
-export function splitRefNameAndRemote(ref: GitReference): [name: string, remote: string | undefined] {
-	if (ref.refType === 'branch') {
-		return ref.remote ? splitBranchNameAndRemote(ref.name) : [ref.name, undefined];
-	}
-	return [ref.name, undefined];
 }

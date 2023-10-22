@@ -1,11 +1,12 @@
 import type { ExecException } from 'child_process';
-import { execFile } from 'child_process';
+import { exec, execFile } from 'child_process';
 import type { Stats } from 'fs';
-import { exists, existsSync, statSync } from 'fs';
+import { access, constants, existsSync, statSync } from 'fs';
 import { join as joinPaths } from 'path';
 import * as process from 'process';
 import type { CancellationToken } from 'vscode';
 import { Logger } from '../../../system/logger';
+import { normalizePath } from '../../../system/path';
 
 export const isWindows = process.platform === 'win32';
 
@@ -114,6 +115,19 @@ export function findExecutable(exe: string, args: string[]): { cmd: string; args
 	}
 
 	return { cmd: exe, args: args };
+}
+
+export async function getWindowsShortPath(path: string): Promise<string> {
+	return new Promise<string>((resolve, reject) => {
+		exec(`for %I in ("${path}") do @echo %~sI`, (error, stdout, _stderr) => {
+			if (error != null) {
+				reject(error);
+				return;
+			}
+
+			resolve(normalizePath(stdout.trim()));
+		});
+	});
 }
 
 export interface RunOptions<TEncoding = BufferEncoding | 'buffer'> {
@@ -231,11 +245,12 @@ export function run<T extends number | string | Buffer>(
 					error.message = `Command output exceeded the allocated stdout buffer. Set 'options.maxBuffer' to a larger value than ${opts.maxBuffer} bytes`;
 				}
 
-				let stdoutDecoded;
-				let stderrDecoded;
+				let stdoutDecoded: string;
+				let stderrDecoded: string;
 				if (encoding === 'utf8' || encoding === 'binary' || encoding === 'buffer') {
-					stdoutDecoded = stdout;
-					stderrDecoded = stderr;
+					// stdout & stderr can be `Buffer` or `string
+					stdoutDecoded = stdout.toString();
+					stderrDecoded = stderr.toString();
 				} else {
 					const decode = (await import(/* webpackChunkName: "encoding" */ 'iconv-lite')).decode;
 					stdoutDecoded = decode(Buffer.from(stdout, 'binary'), encoding);
@@ -275,6 +290,6 @@ export function run<T extends number | string | Buffer>(
 	});
 }
 
-export function fsExists(path: string) {
-	return new Promise<boolean>(resolve => exists(path, exists => resolve(exists)));
+export async function fsExists(path: string) {
+	return new Promise<boolean>(resolve => access(path, constants.F_OK, err => resolve(err == null)));
 }

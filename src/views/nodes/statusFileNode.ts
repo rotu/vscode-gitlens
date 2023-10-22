@@ -1,6 +1,6 @@
 import type { Command } from 'vscode';
 import { ThemeIcon, TreeItem, TreeItemCollapsibleState } from 'vscode';
-import type { DiffWithCommandArgs } from '../../commands';
+import type { DiffWithCommandArgs } from '../../commands/diffWith';
 import type { DiffWithPreviousCommandArgs } from '../../commands/diffWithPrevious';
 import { Commands } from '../../constants';
 import { StatusFileFormatter } from '../../git/formatters/statusFormatter';
@@ -16,7 +16,7 @@ import type { FileNode } from './folderNode';
 import type { ViewNode } from './viewNode';
 import { ContextValues, ViewFileNode } from './viewNode';
 
-export class StatusFileNode extends ViewFileNode<ViewsWithCommits> implements FileNode {
+export class StatusFileNode extends ViewFileNode<'status-file', ViewsWithCommits> implements FileNode {
 	public readonly commits: GitCommit[];
 
 	private readonly _direction: 'ahead' | 'behind';
@@ -55,7 +55,7 @@ export class StatusFileNode extends ViewFileNode<ViewsWithCommits> implements Fi
 			}
 		}
 
-		super(GitUri.fromFile(file, repoPath, ref), view, parent, file);
+		super('status-file', GitUri.fromFile(file, repoPath, ref), view, parent, file);
 
 		this.commits = commits;
 

@@ -1,59 +1,58 @@
 import { MarkdownString, ThemeIcon, TreeItem, TreeItemCollapsibleState, Uri, window } from 'vscode';
-import { ContextKeys, GlyphChars } from '../../constants';
-import { getContext } from '../../context';
+import { GlyphChars } from '../../constants';
 import type { GitUri } from '../../git/gitUri';
 import type { GitBranch } from '../../git/models/branch';
 import type { GitLog } from '../../git/models/log';
-import type { PullRequest } from '../../git/models/pullRequest';
-import { PullRequestState } from '../../git/models/pullRequest';
+import type { PullRequest, PullRequestState } from '../../git/models/pullRequest';
 import { shortenRevision } from '../../git/models/reference';
-import { GitRemote, GitRemoteType } from '../../git/models/remote';
+import { GitRemote } from '../../git/models/remote';
 import type { GitWorktree } from '../../git/models/worktree';
+import { getContext } from '../../system/context';
 import { gate } from '../../system/decorators/gate';
 import { debug } from '../../system/decorators/log';
 import { map } from '../../system/iterable';
+import { Logger } from '../../system/logger';
 import type { Deferred } from '../../system/promise';
 import { defer, getSettledValue } from '../../system/promise';
 import { pad } from '../../system/string';
-import type { RepositoriesView } from '../repositoriesView';
-import type { WorktreesView } from '../worktreesView';
+import type { ViewsWithWorktrees } from '../viewBase';
 import { CommitNode } from './commitNode';
 import { LoadMoreNode, MessageNode } from './common';
 import { CompareBranchNode } from './compareBranchNode';
 import { insertDateMarkers } from './helpers';
 import { PullRequestNode } from './pullRequestNode';
-import { RepositoryNode } from './repositoryNode';
 import { UncommittedFilesNode } from './UncommittedFilesNode';
-import { ContextValues, ViewNode } from './viewNode';
+import { ContextValues, getViewNodeId, ViewNode } from './viewNode';
 
 type State = {
 	pullRequest: PullRequest | null | undefined;
 	pendingPullRequest: Promise<PullRequest | undefined> | undefined;
 };
 
-export class WorktreeNode extends ViewNode<WorktreesView | RepositoriesView, State> {
-	static key = ':worktree';
-	static getId(repoPath: string, uri: Uri): string {
-		return `${RepositoryNode.getId(repoPath)}${this.key}(${uri.path})`;
-	}
+export class WorktreeNode extends ViewNode<'worktree', ViewsWithWorktrees, State> {
+	limit: number | undefined;
 
 	private _branch: GitBranch | undefined;
 
 	constructor(
 		uri: GitUri,
-		view: WorktreesView | RepositoriesView,
-		parent: ViewNode,
+		view: ViewsWithWorktrees,
+		protected override readonly parent: ViewNode,
 		public readonly worktree: GitWorktree,
 	) {
-		super(uri, view, parent);
+		super('worktree', uri, view, parent);
+
+		this.updateContext({ worktree: worktree });
+		this._uniqueId = getViewNodeId(this.type, this.context);
+		this.limit = this.view.getNodeLastKnownLimit(this);
+	}
+
+	override get id(): string {
+		return this._uniqueId;
 	}
 
 	override toClipboard(): string {
 		return this.worktree.uri.fsPath;
-	}
-
-	override get id(): string {
-		return WorktreeNode.getId(this.worktree.repoPath, this.worktree.uri);
 	}
 
 	get repoPath(): string {
@@ -74,13 +73,13 @@ export class WorktreeNode extends ViewNode<WorktreesView | RepositoriesView, Sta
 				this.view.config.pullRequests.enabled &&
 				this.view.config.pullRequests.showForBranches &&
 				(branch.upstream != null || branch.remote) &&
-				getContext(ContextKeys.HasConnectedRemotes)
+				getContext('gitlens:hasConnectedRemotes')
 			) {
 				pullRequest = this.getState('pullRequest');
 				if (pullRequest === undefined && this.getState('pendingPullRequest') === undefined) {
 					onCompleted = defer<void>();
 					const prPromise = this.getAssociatedPullRequest(branch, {
-						include: [PullRequestState.Open, PullRequestState.Merged],
+						include: ['opened', 'merged'],
 					});
 
 					queueMicrotask(async () => {
@@ -99,7 +98,7 @@ export class WorktreeNode extends ViewNode<WorktreesView | RepositoriesView, Sta
 						// If we found a pull request, insert it into the children cache (if loaded) and refresh the node
 						if (pr != null && this._children != null) {
 							this._children.splice(
-								this._children[0] instanceof CompareBranchNode ? 1 : 0,
+								this._children[0].type === 'compare-branch' ? 1 : 0,
 								0,
 								new PullRequestNode(this.view, this, pr, branch),
 							);
@@ -179,7 +178,7 @@ export class WorktreeNode extends ViewNode<WorktreesView | RepositoriesView, Sta
 			const status = getSettledValue(statusResult);
 
 			if (status?.hasChanges) {
-				children.splice(0, 0, new UncommittedFilesNode(this.view, this, status, undefined));
+				children.unshift(new UncommittedFilesNode(this.view, this, status, undefined));
 			}
 
 			this._children = children;
@@ -208,6 +207,8 @@ export class WorktreeNode extends ViewNode<WorktreesView | RepositoriesView, Sta
 				  } `
 				: '';
 
+		let missing = false;
+
 		switch (this.worktree.type) {
 			case 'bare':
 				icon = new ThemeIcon('folder');
@@ -218,7 +219,13 @@ export class WorktreeNode extends ViewNode<WorktreesView | RepositoriesView, Sta
 				);
 				break;
 			case 'branch': {
-				const [branch, status] = await Promise.all([this.worktree.getBranch(), this.worktree.getStatus()]);
+				const [branchResult, statusResult] = await Promise.allSettled([
+					this.worktree.getBranch(),
+					this.worktree.getStatus(),
+				]);
+				const branch = getSettledValue(branchResult);
+				const status = getSettledValue(statusResult);
+
 				this._branch = branch;
 
 				tooltip.appendMarkdown(
@@ -237,6 +244,9 @@ export class WorktreeNode extends ViewNode<WorktreesView | RepositoriesView, Sta
 							expand: true,
 						})}`,
 					);
+				} else if (statusResult.status === 'rejected') {
+					Logger.error(statusResult.reason, 'Worktree status failed');
+					missing = true;
 				}
 
 				if (branch != null) {
@@ -252,11 +262,11 @@ export class WorktreeNode extends ViewNode<WorktreesView | RepositoriesView, Sta
 									let left;
 									let right;
 									for (const { type } of remote.urls) {
-										if (type === GitRemoteType.Fetch) {
+										if (type === 'fetch') {
 											left = true;
 
 											if (right) break;
-										} else if (type === GitRemoteType.Push) {
+										} else if (type === 'push') {
 											right = true;
 
 											if (left) break;
@@ -315,7 +325,14 @@ export class WorktreeNode extends ViewNode<WorktreesView | RepositoriesView, Sta
 					)}${indicators}\\\n\`${this.worktree.friendlyPath}\``,
 				);
 
-				const status = await this.worktree.getStatus();
+				let status;
+				try {
+					status = await this.worktree.getStatus();
+				} catch (ex) {
+					Logger.error(ex, 'Worktree status failed');
+					missing = true;
+				}
+
 				if (status != null) {
 					hasChanges = status.hasChanges;
 					tooltip.appendMarkdown(
@@ -336,6 +353,10 @@ export class WorktreeNode extends ViewNode<WorktreesView | RepositoriesView, Sta
 			tooltip.appendMarkdown(`\n\n$(loading~spin) Loading associated pull request${GlyphChars.Ellipsis}`);
 		}
 
+		if (missing) {
+			tooltip.appendMarkdown(`\n\n${GlyphChars.Warning} Unable to locate worktree path`);
+		}
+
 		const item = new TreeItem(this.worktree.name, TreeItemCollapsibleState.Collapsed);
 		item.id = this.id;
 		item.description = description;
@@ -349,7 +370,11 @@ export class WorktreeNode extends ViewNode<WorktreesView | RepositoriesView, Sta
 				? new ThemeIcon('check')
 				: icon;
 		item.tooltip = tooltip;
-		item.resourceUri = hasChanges ? Uri.parse('gitlens-view://worktree/changes') : undefined;
+		item.resourceUri = missing
+			? Uri.parse('gitlens-view://worktree/missing')
+			: hasChanges
+			? Uri.parse('gitlens-view://worktree/changes')
+			: undefined;
 		return item;
 	}
 
@@ -401,7 +426,6 @@ export class WorktreeNode extends ViewNode<WorktreesView | RepositoriesView, Sta
 		return this._log?.hasMore ?? true;
 	}
 
-	limit: number | undefined = this.view.getNodeLastKnownLimit(this);
 	@gate()
 	async loadMore(limit?: number | { until?: any }) {
 		let log = await window.withProgress(

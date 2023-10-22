@@ -5,27 +5,33 @@ import type { Repository } from '../../git/models/repository';
 import { gate } from '../../system/decorators/gate';
 import { debug } from '../../system/decorators/log';
 import type { RepositoriesView } from '../repositoriesView';
+import type { WorkspacesView } from '../workspacesView';
 import { LoadMoreNode, MessageNode } from './common';
 import { ReflogRecordNode } from './reflogRecordNode';
-import { RepositoryNode } from './repositoryNode';
 import type { PageableViewNode } from './viewNode';
-import { ContextValues, ViewNode } from './viewNode';
+import { ContextValues, getViewNodeId, ViewNode } from './viewNode';
 
-export class ReflogNode extends ViewNode<RepositoriesView> implements PageableViewNode {
-	static key = ':reflog';
-	static getId(repoPath: string): string {
-		return `${RepositoryNode.getId(repoPath)}${this.key}`;
-	}
+export class ReflogNode extends ViewNode<'reflog', RepositoriesView | WorkspacesView> implements PageableViewNode {
+	limit: number | undefined;
 
-	private _children: ViewNode[] | undefined;
+	constructor(
+		uri: GitUri,
+		view: RepositoriesView | WorkspacesView,
+		parent: ViewNode,
+		public readonly repo: Repository,
+	) {
+		super('reflog', uri, view, parent);
 
-	constructor(uri: GitUri, view: RepositoriesView, parent: ViewNode, public readonly repo: Repository) {
-		super(uri, view, parent);
+		this.updateContext({ repository: repo });
+		this._uniqueId = getViewNodeId(this.type, this.context);
+		this.limit = this.view.getNodeLastKnownLimit(this);
 	}
 
 	override get id(): string {
-		return ReflogNode.getId(this.repo.path);
+		return this._uniqueId;
 	}
+
+	private _children: ViewNode[] | undefined;
 
 	async getChildren(): Promise<ViewNode[]> {
 		if (this._children === undefined) {
@@ -85,7 +91,6 @@ export class ReflogNode extends ViewNode<RepositoriesView> implements PageableVi
 		return this._reflog?.hasMore ?? true;
 	}
 
-	limit: number | undefined = this.view.getNodeLastKnownLimit(this);
 	async loadMore(limit?: number) {
 		let reflog = await this.getReflog();
 		if (reflog === undefined || !reflog.hasMore) return;

@@ -9,10 +9,7 @@ import { parseGitRemoteUrl } from '../parsers/remoteParser';
 import type { RemoteProvider } from '../remotes/remoteProvider';
 import type { RichRemoteProvider } from '../remotes/richRemoteProvider';
 
-export const enum GitRemoteType {
-	Fetch = 'fetch',
-	Push = 'push',
-}
+export type GitRemoteType = 'fetch' | 'push';
 
 export class GitRemote<TProvider extends RemoteProvider | undefined = RemoteProvider | RichRemoteProvider | undefined> {
 	static getHighlanderProviders(remotes: GitRemote<RemoteProvider | RichRemoteProvider>[]) {
@@ -56,25 +53,45 @@ export class GitRemote<TProvider extends RemoteProvider | undefined = RemoteProv
 
 	constructor(
 		public readonly repoPath: string,
-		public readonly id: string,
 		public readonly name: string,
 		public readonly scheme: string,
-		public readonly domain: string,
-		public readonly path: string,
+		private readonly _domain: string,
+		private readonly _path: string,
 		public readonly provider: TProvider,
 		public readonly urls: { type: GitRemoteType; url: string }[],
 	) {}
 
 	get default() {
 		const defaultRemote = Container.instance.storage.getWorkspace('remote:default');
-		return this.id === defaultRemote;
+		// Check for `this.remoteKey` matches to handle previously saved data
+		return this.name === defaultRemote || this.remoteKey === defaultRemote;
+	}
+
+	@memoize()
+	get domain() {
+		return this.provider?.domain ?? this._domain;
+	}
+
+	@memoize()
+	get id() {
+		return `${this.name}/${this.remoteKey}`;
+	}
+
+	@memoize()
+	get path() {
+		return this.provider?.path ?? this._path;
+	}
+
+	@memoize()
+	get remoteKey() {
+		return this._domain ? `${this._domain}/${this._path}` : this.path;
 	}
 
 	@memoize()
 	get url(): string {
 		let bestUrl: string | undefined;
 		for (const remoteUrl of this.urls) {
-			if (remoteUrl.type === GitRemoteType.Push) {
+			if (remoteUrl.type === 'push') {
 				return remoteUrl.url;
 			}
 
@@ -86,8 +103,12 @@ export class GitRemote<TProvider extends RemoteProvider | undefined = RemoteProv
 		return bestUrl!;
 	}
 
-	hasRichProvider(): this is GitRemote<RichRemoteProvider> {
+	hasRichIntegration(): this is GitRemote<RichRemoteProvider> {
 		return this.provider?.hasRichIntegration() ?? false;
+	}
+
+	get maybeConnected(): boolean | undefined {
+		return this.provider == null ? false : this.provider.maybeConnected;
 	}
 
 	matches(url: string): boolean;
@@ -112,11 +133,11 @@ export function getRemoteArrowsGlyph(remote: GitRemote): GlyphChars {
 	let left;
 	let right;
 	for (const { type } of remote.urls) {
-		if (type === GitRemoteType.Fetch) {
+		if (type === 'fetch') {
 			left = true;
 
 			if (right) break;
-		} else if (type === GitRemoteType.Push) {
+		} else if (type === 'push') {
 			right = true;
 
 			if (left) break;
@@ -162,4 +183,14 @@ export function getRemoteIconUri(
 		`images/${isLightTheme(theme) ? 'light' : 'dark'}/icon-${remote.provider.icon}.svg`,
 	);
 	return asWebviewUri != null ? asWebviewUri(uri) : uri;
+}
+
+export function getVisibilityCacheKey(remote: GitRemote): string;
+export function getVisibilityCacheKey(remotes: GitRemote[]): string;
+export function getVisibilityCacheKey(remotes: GitRemote | GitRemote[]): string {
+	if (!Array.isArray(remotes)) return remotes.remoteKey;
+	return remotes
+		.map(r => r.remoteKey)
+		.sort()
+		.join(',');
 }

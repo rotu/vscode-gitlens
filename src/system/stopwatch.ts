@@ -1,10 +1,12 @@
 import { hrtime } from '@env/hrtime';
-import { GlyphChars } from '../constants';
 import type { LogProvider } from './logger';
 import { defaultLogProvider } from './logger';
-import { LogLevel } from './logger.constants';
+import type { LogLevel } from './logger.constants';
 import type { LogScope } from './logger.scope';
-import { getNextLogScopeId } from './logger.scope';
+import { getNewLogScope } from './logger.scope';
+
+(Symbol as any).dispose ??= Symbol('Symbol.dispose');
+(Symbol as any).asyncDispose ??= Symbol('Symbol.asyncDispose');
 
 type StopwatchLogOptions = { message?: string; suffix?: string };
 type StopwatchOptions = {
@@ -12,10 +14,10 @@ type StopwatchOptions = {
 	logLevel?: StopwatchLogLevel;
 	provider?: LogProvider;
 };
-type StopwatchLogLevel = Exclude<LogLevel, LogLevel.Off>;
+type StopwatchLogLevel = Exclude<LogLevel, 'off'>;
 
-export class Stopwatch {
-	private readonly instance = `[${String(getNextLogScopeId()).padStart(5)}] `;
+export class Stopwatch implements Disposable {
+	private readonly logScope: LogScope;
 	private readonly logLevel: StopwatchLogLevel;
 	private readonly logProvider: LogProvider;
 
@@ -24,13 +26,10 @@ export class Stopwatch {
 		return this._time;
 	}
 
-	constructor(public readonly scope: string | LogScope | undefined, options?: StopwatchOptions, ...params: any[]) {
-		let logScope;
-		if (typeof scope !== 'string') {
-			logScope = scope;
-			scope = '';
-			this.instance = '';
-		}
+	private _stopped = false;
+
+	constructor(scope: string | LogScope | undefined, options?: StopwatchOptions, ...params: any[]) {
+		this.logScope = scope != null && typeof scope !== 'string' ? scope : getNewLogScope(scope ?? '');
 
 		let logOptions: StopwatchLogOptions | undefined;
 		if (typeof options?.log === 'boolean') {
@@ -39,7 +38,7 @@ export class Stopwatch {
 			logOptions = options?.log ?? {};
 		}
 
-		this.logLevel = options?.logLevel ?? LogLevel.Info;
+		this.logLevel = options?.logLevel ?? 'info';
 		this.logProvider = options?.provider ?? defaultLogProvider;
 		this._time = hrtime();
 
@@ -49,18 +48,22 @@ export class Stopwatch {
 			if (params.length) {
 				this.logProvider.log(
 					this.logLevel,
-					logScope,
-					`${this.instance}${scope}${logOptions.message ?? ''}${logOptions.suffix ?? ''}`,
+					this.logScope,
+					`${logOptions.message ?? ''}${logOptions.suffix ?? ''}`,
 					...params,
 				);
 			} else {
 				this.logProvider.log(
 					this.logLevel,
-					logScope,
-					`${this.instance}${scope}${logOptions.message ?? ''}${logOptions.suffix ?? ''}`,
+					this.logScope,
+					`${logOptions.message ?? ''}${logOptions.suffix ?? ''}`,
 				);
 			}
 		}
+	}
+
+	[Symbol.dispose](): void {
+		this.stop();
 	}
 
 	elapsed(): number {
@@ -69,37 +72,27 @@ export class Stopwatch {
 	}
 
 	log(options?: StopwatchLogOptions): void {
-		this.logCore(this.scope, options, false);
+		this.logCore(options, false);
 	}
 
 	restart(options?: StopwatchLogOptions): void {
-		this.logCore(this.scope, options, true);
+		this.logCore(options, true);
 		this._time = hrtime();
+		this._stopped = false;
 	}
 
 	stop(options?: StopwatchLogOptions): void {
+		if (this._stopped) return;
+
 		this.restart(options);
+		this._stopped = true;
 	}
 
-	private logCore(
-		scope: string | LogScope | undefined,
-		options: StopwatchLogOptions | undefined,
-		logTotalElapsed: boolean,
-	): void {
+	private logCore(options: StopwatchLogOptions | undefined, logTotalElapsed: boolean): void {
 		if (!this.logProvider.enabled(this.logLevel)) return;
 
-		let logScope;
-		if (typeof scope !== 'string') {
-			logScope = scope;
-			scope = '';
-		}
-
 		if (!logTotalElapsed) {
-			this.logProvider.log(
-				this.logLevel,
-				logScope,
-				`${this.instance}${scope}${options?.message ?? ''}${options?.suffix ?? ''}`,
-			);
+			this.logProvider.log(this.logLevel, this.logScope, `${options?.message ?? ''}${options?.suffix ?? ''}`);
 
 			return;
 		}
@@ -107,27 +100,21 @@ export class Stopwatch {
 		const [secs, nanosecs] = hrtime(this._time);
 		const ms = secs * 1000 + Math.floor(nanosecs / 1000000);
 
-		const prefix = `${this.instance}${scope}${options?.message ?? ''}`;
+		const prefix = options?.message ?? '';
 		this.logProvider.log(
-			ms > 250 ? LogLevel.Warn : this.logLevel,
-			logScope,
-			`${prefix ? `${prefix} ${GlyphChars.Dot} ` : ''}${ms} ms${options?.suffix ?? ''}`,
+			ms > 250 ? 'warn' : this.logLevel,
+			this.logScope,
+			`${prefix ? `${prefix} ` : ''}[${ms}ms]${options?.suffix ?? ''}`,
 		);
 	}
+}
 
-	private static readonly watches = new Map<string, Stopwatch>();
-
-	static start(key: string, options?: StopwatchOptions, ...params: any[]): void {
-		Stopwatch.watches.get(key)?.log();
-		Stopwatch.watches.set(key, new Stopwatch(key, options, ...params));
-	}
-
-	static log(key: string, options?: StopwatchLogOptions): void {
-		Stopwatch.watches.get(key)?.log(options);
-	}
-
-	static stop(key: string, options?: StopwatchLogOptions): void {
-		Stopwatch.watches.get(key)?.stop(options);
-		Stopwatch.watches.delete(key);
-	}
+export function maybeStopWatch(
+	scope: string | LogScope | undefined,
+	options?: StopwatchOptions,
+	...params: any[]
+): Stopwatch | undefined {
+	return (options?.provider ?? defaultLogProvider).enabled(options?.logLevel ?? 'info')
+		? new Stopwatch(scope, options, ...params)
+		: undefined;
 }

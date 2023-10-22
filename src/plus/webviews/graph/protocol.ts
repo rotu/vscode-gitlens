@@ -16,16 +16,28 @@ import type {
 	RefMetadataItem,
 	RefMetadataType,
 	Remote,
+	RowStats,
+	GraphItemContext as SerializedGraphItemContext,
 	Tag,
 	UpstreamMetadata,
 	WorkDirStats,
 } from '@gitkraken/gitkraken-components';
-import type { DateStyle } from '../../../config';
+import type { Config, DateStyle } from '../../../config';
 import type { RepositoryVisibility } from '../../../git/gitProvider';
+import type { GitTrackingState } from '../../../git/models/branch';
 import type { GitGraphRowType } from '../../../git/models/graph';
+import type {
+	GitBranchReference,
+	GitReference,
+	GitRevisionReference,
+	GitStashReference,
+	GitTagReference,
+} from '../../../git/models/reference';
 import type { GitSearchResultData, SearchQuery } from '../../../git/search';
 import type { Subscription } from '../../../subscription';
 import type { DateTimeFormat } from '../../../system/date';
+import type { WebviewItemContext, WebviewItemGroupContext } from '../../../system/webview';
+import type { WebviewState } from '../../../webviews/protocol';
 import { IpcCommandType, IpcNotificationType } from '../../../webviews/protocol';
 
 export type { GraphRefType } from '@gitkraken/gitkraken-components';
@@ -45,41 +57,37 @@ export type GraphMissingRefsMetadataType = RefMetadataType;
 export type GraphMissingRefsMetadata = Record</*id*/ string, /*missingType*/ GraphMissingRefsMetadataType[]>;
 export type GraphPullRequestMetadata = PullRequestMetadata;
 
-export enum GraphRefMetadataTypes {
-	Upstream = 'upstream',
-	PullRequest = 'pullRequest',
-}
+export type GraphRefMetadataTypes = 'upstream' | 'pullRequest' | 'issue';
 
-export const enum GraphScrollMarkerTypes {
-	Selection = 'selection',
-	Head = 'head',
-	Highlights = 'highlights',
-	LocalBranches = 'localBranches',
-	RemoteBranches = 'remoteBranches',
-	Stashes = 'stashes',
-	Tags = 'tags',
-	Upstream = 'upstream',
-}
+export type GraphScrollMarkerTypes =
+	| 'selection'
+	| 'head'
+	| 'highlights'
+	| 'localBranches'
+	| 'remoteBranches'
+	| 'stashes'
+	| 'tags'
+	| 'upstream';
 
-export const enum GraphMinimapMarkerTypes {
-	Selection = 'selection',
-	Head = 'head',
-	Highlights = 'highlights',
-	LocalBranches = 'localBranches',
-	RemoteBranches = 'remoteBranches',
-	Stashes = 'stashes',
-	Tags = 'tags',
-	Upstream = 'upstream',
-}
+export type GraphMinimapMarkerTypes =
+	| 'selection'
+	| 'head'
+	| 'highlights'
+	| 'localBranches'
+	| 'remoteBranches'
+	| 'stashes'
+	| 'tags'
+	| 'upstream';
 
-export const supportedRefMetadataTypes: GraphRefMetadataType[] = Object.values(GraphRefMetadataTypes);
+export const supportedRefMetadataTypes: GraphRefMetadataType[] = ['upstream', 'pullRequest', 'issue'];
 
-export interface State {
+export interface State extends WebviewState {
 	windowFocused?: boolean;
 	repositories?: GraphRepository[];
 	selectedRepository?: string;
 	selectedRepositoryVisibility?: RepositoryVisibility;
 	branchName?: string;
+	branchState?: BranchState;
 	lastFetched?: Date;
 	selectedRows?: GraphSelectedRows;
 	subscription?: Subscription;
@@ -88,19 +96,19 @@ export interface State {
 	loading?: boolean;
 	refsMetadata?: GraphRefsMetadata | null;
 	rows?: GraphRow[];
+	rowsStats?: Record<string, GraphRowStats>;
+	rowsStatsLoading?: boolean;
 	downstreams?: GraphDownstreams;
 	paging?: GraphPaging;
 	columns?: GraphColumnsSettings;
 	config?: GraphComponentConfig;
-	context?: GraphContexts;
+	context?: GraphContexts & { settings?: SerializedGraphItemContext };
 	nonce?: string;
-	trialBanner?: boolean;
 	workingTreeStats?: GraphWorkingTreeStats;
 	searchResults?: DidSearchParams['results'];
 	excludeRefs?: GraphExcludeRefs;
 	excludeTypes?: GraphExcludeTypes;
 	includeOnlyRefs?: GraphIncludeOnlyRefs;
-	debugging: boolean;
 
 	// Props below are computed in the webview (not passed)
 	activeDay?: number;
@@ -110,6 +118,15 @@ export interface State {
 		bottom: number;
 	};
 	theming?: { cssVariables: CssVariables; themeOpacityFactor: number };
+}
+
+export interface BranchState extends GitTrackingState {
+	upstream?: string;
+	provider?: {
+		name: string;
+		icon?: string;
+		url?: string;
+	};
 }
 
 export type GraphWorkingTreeStats = WorkDirStats;
@@ -155,9 +172,10 @@ export interface GraphComponentConfig {
 	enableMultiSelection?: boolean;
 	highlightRowsOnRefHover?: boolean;
 	minimap?: boolean;
-	enabledMinimapMarkerTypes?: GraphMinimapMarkerTypes[];
+	minimapDataType?: Config['graph']['minimap']['dataType'];
+	minimapMarkerTypes?: GraphMinimapMarkerTypes[];
+	scrollMarkerTypes?: GraphScrollMarkerTypes[];
 	scrollRowPadding?: number;
-	enabledScrollMarkerTypes?: GraphScrollMarkerTypes[];
 	showGhostRefsOnRowHover?: boolean;
 	showRemoteNamesOnRefs?: boolean;
 	idLength?: number;
@@ -165,11 +183,12 @@ export interface GraphComponentConfig {
 
 export interface GraphColumnConfig {
 	isHidden?: boolean;
+	mode?: string;
 	width?: number;
 	order?: number;
 }
 
-export type GraphColumnsConfig = { [name: string]: GraphColumnConfig };
+export type GraphColumnsConfig = Record<string, GraphColumnConfig>;
 
 export type GraphExcludeRefs = ExcludeRefsById;
 export type GraphExcludedRef = GraphRefOptData;
@@ -178,12 +197,15 @@ export type GraphIncludeOnlyRefs = IncludeOnlyRefsById;
 export type GraphIncludeOnlyRef = GraphRefOptData;
 
 export type GraphColumnName = GraphZoneType;
+export type GraphRowStats = RowStats;
 
 export type InternalNotificationType = 'didChangeTheme';
 
-export interface UpdateStateCallback {
-	(state: State, type?: IpcNotificationType<any> | InternalNotificationType, themingChanged?: boolean): void;
-}
+export type UpdateStateCallback = (
+	state: State,
+	type?: IpcNotificationType<any> | InternalNotificationType,
+	themingChanged?: boolean,
+) => void;
 
 // Commands
 
@@ -193,11 +215,6 @@ export interface DimMergeCommitsParams {
 	dim: boolean;
 }
 export const DimMergeCommitsCommandType = new IpcCommandType<DimMergeCommitsParams>('graph/dimMergeCommits');
-
-export interface DismissBannerParams {
-	key: 'preview' | 'trial';
-}
-export const DismissBannerCommandType = new IpcCommandType<DismissBannerParams>('graph/dismissBanner');
 
 export type DoubleClickedParams =
 	| {
@@ -299,7 +316,6 @@ export interface DidChangeGraphConfigurationParams {
 }
 export const DidChangeGraphConfigurationNotificationType = new IpcNotificationType<DidChangeGraphConfigurationParams>(
 	'graph/configuration/didChange',
-	true,
 );
 
 export interface DidChangeSubscriptionParams {
@@ -308,7 +324,6 @@ export interface DidChangeSubscriptionParams {
 }
 export const DidChangeSubscriptionNotificationType = new IpcNotificationType<DidChangeSubscriptionParams>(
 	'graph/subscription/didChange',
-	true,
 );
 
 export interface DidChangeAvatarsParams {
@@ -316,7 +331,6 @@ export interface DidChangeAvatarsParams {
 }
 export const DidChangeAvatarsNotificationType = new IpcNotificationType<DidChangeAvatarsParams>(
 	'graph/avatars/didChange',
-	true,
 );
 
 export interface DidChangeRefsMetadataParams {
@@ -324,24 +338,34 @@ export interface DidChangeRefsMetadataParams {
 }
 export const DidChangeRefsMetadataNotificationType = new IpcNotificationType<DidChangeRefsMetadataParams>(
 	'graph/refs/didChangeMetadata',
-	true,
 );
 
 export interface DidChangeColumnsParams {
 	columns: GraphColumnsSettings | undefined;
 	context?: string;
+	settingsContext?: string;
 }
 export const DidChangeColumnsNotificationType = new IpcNotificationType<DidChangeColumnsParams>(
 	'graph/columns/didChange',
-	true,
 );
+
+export interface DidChangeScrollMarkersParams {
+	context?: string;
+}
+export const DidChangeScrollMarkersNotificationType = new IpcNotificationType<DidChangeScrollMarkersParams>(
+	'graph/scrollMarkers/didChange',
+);
+
+export interface DidChangeFocusParams {
+	focused: boolean;
+}
+export const DidChangeFocusNotificationType = new IpcNotificationType<DidChangeFocusParams>('graph/focus/didChange');
 
 export interface DidChangeWindowFocusParams {
 	focused: boolean;
 }
 export const DidChangeWindowFocusNotificationType = new IpcNotificationType<DidChangeWindowFocusParams>(
 	'graph/window/focus/didChange',
-	true,
 );
 
 export interface DidChangeRefsVisibilityParams {
@@ -351,25 +375,33 @@ export interface DidChangeRefsVisibilityParams {
 }
 export const DidChangeRefsVisibilityNotificationType = new IpcNotificationType<DidChangeRefsVisibilityParams>(
 	'graph/refs/didChangeVisibility',
-	true,
 );
 
 export interface DidChangeRowsParams {
 	rows: GraphRow[];
-	downstreams: { [upstreamName: string]: string[] };
-	avatars: { [email: string]: string };
+	avatars: Record<string, string>;
+	downstreams: Record<string, string[]>;
 	paging?: GraphPaging;
 	refsMetadata?: GraphRefsMetadata | null;
+	rowsStats?: Record<string, GraphRowStats>;
+	rowsStatsLoading: boolean;
 	selectedRows?: GraphSelectedRows;
 }
 export const DidChangeRowsNotificationType = new IpcNotificationType<DidChangeRowsParams>('graph/rows/didChange');
+
+export interface DidChangeRowsStatsParams {
+	rowsStats: Record<string, GraphRowStats>;
+	rowsStatsLoading: boolean;
+}
+export const DidChangeRowsStatsNotificationType = new IpcNotificationType<DidChangeRowsStatsParams>(
+	'graph/rows/stats/didChange',
+);
 
 export interface DidChangeSelectionParams {
 	selection: GraphSelectedRows;
 }
 export const DidChangeSelectionNotificationType = new IpcNotificationType<DidChangeSelectionParams>(
 	'graph/selection/didChange',
-	true,
 );
 
 export interface DidChangeWorkingTreeParams {
@@ -377,16 +409,16 @@ export interface DidChangeWorkingTreeParams {
 }
 export const DidChangeWorkingTreeNotificationType = new IpcNotificationType<DidChangeWorkingTreeParams>(
 	'graph/workingTree/didChange',
-	true,
 );
 
 export interface DidEnsureRowParams {
 	id?: string; // `undefined` if the row was not found
+	remapped?: string;
 }
 export const DidEnsureRowNotificationType = new IpcNotificationType<DidEnsureRowParams>('graph/rows/didEnsure');
 
 export interface GraphSearchResults {
-	ids?: { [id: string]: GitSearchResultData };
+	ids?: Record<string, GitSearchResultData>;
 	count: number;
 	paging?: { hasMore: boolean };
 }
@@ -399,9 +431,81 @@ export interface DidSearchParams {
 	results: GraphSearchResults | GraphSearchResultsError | undefined;
 	selectedRows?: GraphSelectedRows;
 }
-export const DidSearchNotificationType = new IpcNotificationType<DidSearchParams>('graph/didSearch', true);
+export const DidSearchNotificationType = new IpcNotificationType<DidSearchParams>('graph/didSearch');
 
 export interface DidFetchParams {
 	lastFetched: Date;
 }
-export const DidFetchNotificationType = new IpcNotificationType<DidFetchParams>('graph/didFetch', true);
+export const DidFetchNotificationType = new IpcNotificationType<DidFetchParams>('graph/didFetch');
+
+export interface ShowInCommitGraphCommandArgs {
+	ref: GitReference;
+	preserveFocus?: boolean;
+}
+export type GraphItemContext = WebviewItemContext<GraphItemContextValue>;
+export type GraphItemContextValue = GraphColumnsContextValue | GraphItemTypedContextValue | GraphItemRefContextValue;
+
+export type GraphItemGroupContext = WebviewItemGroupContext<GraphItemGroupContextValue>;
+export type GraphItemGroupContextValue = GraphItemRefGroupContextValue;
+
+export type GraphItemRefContext<T = GraphItemRefContextValue> = WebviewItemContext<T>;
+export type GraphItemRefContextValue =
+	| GraphBranchContextValue
+	| GraphCommitContextValue
+	| GraphStashContextValue
+	| GraphTagContextValue;
+
+export type GraphItemRefGroupContext<T = GraphItemRefGroupContextValue> = WebviewItemGroupContext<T>;
+export interface GraphItemRefGroupContextValue {
+	type: 'refGroup';
+	refs: (GitBranchReference | GitTagReference)[];
+}
+
+export type GraphItemTypedContext<T = GraphItemTypedContextValue> = WebviewItemContext<T>;
+export type GraphItemTypedContextValue =
+	| GraphContributorContextValue
+	| GraphPullRequestContextValue
+	| GraphUpstreamStatusContextValue;
+
+export type GraphColumnsContextValue = string;
+
+export interface GraphContributorContextValue {
+	type: 'contributor';
+	repoPath: string;
+	name: string;
+	email: string | undefined;
+	current?: boolean;
+}
+
+export interface GraphPullRequestContextValue {
+	type: 'pullrequest';
+	id: string;
+	url: string;
+}
+
+export interface GraphBranchContextValue {
+	type: 'branch';
+	ref: GitBranchReference;
+}
+
+export interface GraphCommitContextValue {
+	type: 'commit';
+	ref: GitRevisionReference;
+}
+
+export interface GraphStashContextValue {
+	type: 'stash';
+	ref: GitStashReference;
+}
+
+export interface GraphTagContextValue {
+	type: 'tag';
+	ref: GitTagReference;
+}
+
+export interface GraphUpstreamStatusContextValue {
+	type: 'upstreamStatus';
+	ref: GitBranchReference;
+	ahead: number;
+	behind: number;
+}

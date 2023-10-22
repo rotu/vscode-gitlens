@@ -1,3 +1,4 @@
+@use '../../shared/styles/theme';
 @import '../../shared/base';
 @import '../../shared/codicons';
 @import '../../shared/glicons';
@@ -20,22 +21,7 @@
 	--titlebar-bg: var(--color-background--darken-075);
 }
 
-body {
-	.vertical_scrollbar,
-	.horizontal_scrollbar {
-		border-color: transparent;
-		transition: border-color 1s linear;
-	}
-
-	&:hover,
-	&:focus-within {
-		.vertical_scrollbar,
-		.horizontal_scrollbar {
-			transition: border-color 0.1s linear;
-			border-color: var(--vscode-scrollbarSlider-background);
-		}
-	}
-
+:root {
 	--titlebar-fg: var(--color-foreground--65);
 	--color-graph-contrast-border: var(--vscode-list-focusOutline);
 	--color-graph-selected-row: var(--vscode-list-activeSelectionBackground);
@@ -43,6 +29,7 @@ body {
 	--color-graph-text-selected-row: var(--vscode-list-activeSelectionForeground);
 	--color-graph-text-dimmed-selected: var(--vscode-list-activeSelectionForeground);
 	--color-graph-text-dimmed: var(--vscode-list-activeSelectionForeground);
+	--color-graph-actionbar-selectedBackground: var(--vscode-toolbar-hoverBackground);
 
 	--color-graph-text-hovered: var(--vscode-list-hoverForeground);
 	--color-graph-text-selected: var(--vscode-editor-foreground, var(--vscode-foreground));
@@ -102,6 +89,34 @@ body {
 
 	--graph-stats-bar-height: 40%;
 	--graph-stats-bar-border-radius: 3px;
+
+	--branch-status-ahead-foreground: var(--vscode-gitlens-decorations\.branchAheadForegroundColor);
+	--branch-status-behind-foreground: var(--vscode-gitlens-decorations\.branchBehindForegroundColor);
+	--branch-status-both-foreground: var(--vscode-gitlens-decorations\.branchDivergedForegroundColor);
+
+	--graph-column-scrollbar-thickness: 14px;
+}
+
+body {
+	.vertical_scrollbar,
+	.horizontal_scrollbar {
+		border-color: transparent;
+		transition: border-color 1s linear;
+	}
+
+	&:hover,
+	&:focus-within {
+		.vertical_scrollbar,
+		.horizontal_scrollbar {
+			transition: border-color 0.1s linear;
+			border-color: var(--vscode-scrollbarSlider-background);
+		}
+	}
+}
+
+::-webkit-scrollbar {
+	width: var(--graph-column-scrollbar-thickness);
+	height: var(--graph-column-scrollbar-thickness);
 }
 
 ::-webkit-scrollbar-corner {
@@ -139,6 +154,23 @@ button:not([disabled]),
 	}
 }
 
+.pill {
+	display: inline-block;
+	padding: 0.2rem 0.5rem;
+	border-radius: 0.5rem;
+	font-size: 1rem;
+	font-weight: 500;
+	line-height: 1;
+	text-transform: uppercase;
+	color: var(--vscode-foreground);
+	background-color: var(--vscode-editorWidget-background);
+
+	.codicon[class*='codicon-'] {
+		font-size: inherit !important;
+		line-height: inherit !important;
+	}
+}
+
 .badge {
 	font-size: 1rem;
 	font-weight: 700;
@@ -163,9 +195,25 @@ button:not([disabled]),
 		width: max-content;
 		right: 0;
 		top: 100%;
+		white-space: normal;
 	}
 
 	&:not(:hover) + &-popover {
+		display: none;
+	}
+}
+
+.popover {
+	position: relative;
+
+	&__content {
+		width: max-content;
+		right: 0;
+		top: 100%;
+		white-space: normal;
+	}
+
+	&__trigger:not(:hover) + &__content {
 		display: none;
 	}
 }
@@ -186,6 +234,12 @@ button:not([disabled]),
 	border-radius: 3px;
 	height: auto;
 
+	display: grid;
+	grid-auto-flow: column;
+	grid-gap: 0.5rem;
+	gap: 0.5rem;
+	max-width: fit-content;
+
 	&[disabled] {
 		pointer-events: none;
 		cursor: default;
@@ -198,25 +252,46 @@ button:not([disabled]),
 		text-decoration: none;
 	}
 
-	.codicon[class*='codicon-'] {
+	&[aria-checked] {
+		border: 1px solid transparent;
+	}
+
+	&[aria-checked='true'] {
+		background-color: var(--vscode-inputOption-activeBackground);
+		color: var(--vscode-inputOption-activeForeground);
+		border-color: var(--vscode-inputOption-activeBorder);
+	}
+
+	.codicon[class*='codicon-'],
+	.glicon[class*='glicon-'] {
 		line-height: 2.2rem;
 		vertical-align: bottom;
 	}
 
-	&__icon,
-	&__icon.codicon[class*='codicon-'] {
-		margin-right: 0.4rem;
+	.codicon[class*='codicon-graph-line'] {
+		transform: translateY(1px);
 	}
-	&__icon:not(.codicon) {
-		display: inline-block;
-		width: 1.6rem;
+
+	&__pill {
+		.is-ahead & {
+			background-color: var(--branch-status-ahead-pill-background);
+		}
+		.is-behind & {
+			background-color: var(--branch-status-behind-pill-background);
+		}
+		.is-ahead.is-behind & {
+			background-color: var(--branch-status-both-pill-background);
+		}
 	}
 
 	&__more,
 	&__more.codicon[class*='codicon-'] {
 		font-size: 1rem;
-		margin-left: 0.4rem;
-		margin-right: -0.35rem;
+		margin-right: -0.25rem;
+	}
+
+	&__more.codicon[class*='codicon-']::before {
+		margin-left: -0.25rem;
 	}
 
 	&__indicator {
@@ -230,8 +305,33 @@ button:not([disabled]),
 		background-color: var(--vscode-progressBar-background);
 	}
 
-	small {
+	&__small {
+		font-size: smaller;
 		opacity: 0.6;
+		text-overflow: ellipsis;
+		overflow: hidden;
+	}
+
+	&.is-ahead {
+		background-color: var(--branch-status-ahead-background);
+
+		&:hover {
+			background-color: var(--branch-status-ahead-hover-background);
+		}
+	}
+	&.is-behind {
+		background-color: var(--branch-status-behind-background);
+
+		&:hover {
+			background-color: var(--branch-status-behind-hover-background);
+		}
+	}
+	&.is-ahead.is-behind {
+		background-color: var(--branch-status-both-background);
+
+		&:hover {
+			background-color: var(--branch-status-both-hover-background);
+		}
 	}
 }
 
@@ -259,6 +359,49 @@ button:not([disabled]),
 	}
 }
 
+.button-group {
+	display: flex;
+	flex-direction: row;
+	align-items: stretch;
+
+	&:hover,
+	&:focus-within {
+		background-color: var(--color-graph-actionbar-selectedBackground);
+		border-radius: 3px;
+	}
+
+	> *:not(:first-child),
+	> *:not(:first-child) .action-button {
+		display: flex;
+		border-top-left-radius: 0;
+		border-bottom-left-radius: 0;
+	}
+
+	> *:not(:first-child) .action-button {
+		padding-left: 0.5rem;
+		padding-right: 0.5rem;
+	}
+
+	> *:not(:last-child),
+	> *:not(:last-child) .action-button {
+		padding-right: 0.5rem;
+	}
+
+	&:hover > *:not(:last-child),
+	&:active > *:not(:last-child),
+	&:focus-within > *:not(:last-child),
+	&:hover > *:not(:last-child) .action-button,
+	&:active > *:not(:last-child) .action-button,
+	&:focus-within > *:not(:last-child) .action-button {
+		border-top-right-radius: 0;
+		border-bottom-right-radius: 0;
+	}
+
+	// > *:not(:first-child) {
+	// 	border-left: 0.1rem solid var(--titlebar-fg);
+	// }
+}
+
 .repo-access {
 	font-size: 1.1em;
 	margin-right: 0.2rem;
@@ -268,21 +411,14 @@ button:not([disabled]),
 	}
 }
 
-.column-button {
-	--column-button-height: 20px;
-
-	position: absolute;
-	top: 1px;
-	right: 0;
-	z-index: 2;
+.columns-settings {
+	--column-button-height: 19px;
 
 	appearance: none;
 	font-family: inherit;
 	background-color: transparent;
 	border: none;
-	color: var(--text-disabled, hsla(0, 0%, 100%, 0.4));
-	margin: 0;
-	padding: 0 4px;
+	color: var(--color-graph-text-disabled, hsla(0, 0%, 100%, 0.4));
 	height: var(--column-button-height);
 	cursor: pointer;
 	background-color: var(--color-graph-actionbar-background);
@@ -305,7 +441,12 @@ button:not([disabled]),
 
 	.codicon[class*='codicon-'] {
 		font-size: 1.1rem;
+		position: relative;
 	}
+}
+
+.gk-graph.bs-tooltip {
+	z-index: 1040;
 }
 
 .alert {
@@ -474,6 +615,37 @@ button:not([disabled]),
 			content: '\ebaa';
 		}
 	}
+	&--remote-github,
+	&--remote-githubEnterprise {
+		&::before {
+			// codicon-github-inverted
+			font-family: codicon;
+			content: '\eba1';
+		}
+	}
+	&--remote-gitlab,
+	&--remote-gitlabSelfHosted {
+		&::before {
+			// glicon-provider-gitlab
+			font-family: 'glicons';
+			content: '\f123';
+		}
+	}
+	&--remote-bitbucket,
+	&--remote-bitbucketServer {
+		&::before {
+			// glicon-provider-bitbucket
+			font-family: 'glicons';
+			content: '\f11f';
+		}
+	}
+	&--remote-azureDevops {
+		&::before {
+			// glicon-provider-azdo
+			font-family: 'glicons';
+			content: '\f11e';
+		}
+	}
 	&--tag {
 		&::before {
 			// codicon-tag
@@ -573,6 +745,80 @@ button:not([disabled]),
 			content: '\ea9a';
 		}
 	}
+	&--settings {
+		&::before {
+			// codicon-settings-gear
+			font-family: codicon;
+			content: '\eb51';
+		}
+	}
+	&--branch {
+		&::before {
+			// codicon-git-branch
+			font-family: codicon;
+			content: '\ea68';
+			top: 0px;
+			margin: 0 0 0 0;
+		}
+	}
+
+	&--graph {
+		&::before {
+			// glicon-graph
+			font-family: glicons;
+			content: '\f102';
+		}
+	}
+
+	&--commit {
+		&::before {
+			// codicon-git-commit
+			font-family: codicon;
+			content: '\eafc';
+			top: 0px;
+			margin: 0 0 0 0;
+		}
+	}
+
+	&--author {
+		&::before {
+			// codicon-account
+			font-family: codicon;
+			content: '\eb99';
+		}
+	}
+
+	&--datetime {
+		&::before {
+			// glicon-clock
+			font-family: glicons;
+			content: '\f11d';
+		}
+	}
+
+	&--message {
+		&::before {
+			// codicon-comment
+			font-family: codicon;
+			content: '\ea6b';
+		}
+	}
+
+	&--changes {
+		&::before {
+			// codicon-request-changes
+			font-family: codicon;
+			content: '\eb43';
+		}
+	}
+
+	&--files {
+		&::before {
+			// codicon-file
+			font-family: codicon;
+			content: '\eb60';
+		}
+	}
 }
 
 .titlebar {
@@ -609,16 +855,24 @@ button:not([disabled]),
 		flex: 0 0 100%;
 
 		&--wrap {
-			flex-wrap: wrap;
+			display: grid;
+			grid-auto-flow: column;
+			white-space: nowrap;
+			justify-content: start;
+			grid-template-columns: repeat(5, min-content) minmax(min-content, 1fr);
+
+			&.no-remote-provider {
+				grid-template-columns: repeat(4, min-content) minmax(min-content, 1fr);
+			}
+
+			&.disallowed {
+				grid-template-columns: repeat(1, min-content) minmax(min-content, 1fr);
+			}
 		}
 	}
 
 	&__group {
 		flex: auto 1 1;
-
-		&--fixed {
-			flex: none;
-		}
 	}
 
 	&__debugging {
@@ -631,7 +885,6 @@ button:not([disabled]),
 .graph-app {
 	--fs-1: 1.1rem;
 	--fs-2: 1.3rem;
-	--scroll-thumb-bg: var(--vscode-scrollbarSlider-background);
 
 	padding: 0;
 
@@ -656,21 +909,16 @@ button:not([disabled]),
 			margin-top: 0.5rem;
 		}
 	}
-	&__cover {
-		position: absolute;
-		top: 0;
-		left: 0;
-		width: 100%;
-		height: 100%;
-		z-index: 1999;
-		backdrop-filter: blur(4px) saturate(0.8);
+
+	&__gate {
+		top: 34px; /* height of the header bar */
 	}
 
 	&__header {
 		flex: none;
-		z-index: 2000;
+		z-index: 101;
 		position: relative;
-		margin-right: 2px;
+		margin: -1px -1px 0 -1px;
 	}
 
 	&__footer {
@@ -689,7 +937,7 @@ button:not([disabled]),
 	}
 }
 
-.graph-header {
+.gk-graph .graph-header {
 	& .resizable-handle.horizontal {
 		--sash-size: 4px;
 		--sash-hover-size: 4px;
@@ -731,9 +979,13 @@ button:not([disabled]),
 		}
 	}
 
+	.columns-btn {
+		margin-top: 0.1rem;
+	}
+
 	.button {
 		background-color: var(--color-graph-actionbar-background);
-		color: var(--text-disabled, hsla(0deg, 0%, 100%, 0.4));
+		color: var(--color-graph-text-disabled, hsla(0deg, 0%, 100%, 0.4));
 		border-radius: 3px;
 
 		&:hover {
@@ -751,6 +1003,10 @@ button:not([disabled]),
 			color: var(--color-foreground);
 		}
 	}
+
+	.graph-icon {
+		color: var(--color-graph-text-disabled, hsla(0, 0%, 100%, 0.4));
+	}
 }
 
 .graph-container {
@@ -764,7 +1020,7 @@ button:not([disabled]),
 
 	& .graph-adjust-commit-count {
 		display: flex;
-		width: calc(100vw - var(--scrollable-scrollbar-thickness));
+		width: calc(100vw - var(--graph-column-scrollbar-thickness));
 		align-items: center;
 		justify-content: center;
 	}
@@ -883,5 +1139,30 @@ button:not([disabled]),
 		box-shadow: 0 2px 8px var(--vscode-widget-shadow);
 		text-align: start;
 		white-space: break-spaces;
+	}
+}
+
+.minimap-marker-swatch {
+	display: inline-block;
+	width: 1.6rem;
+	height: 1.6rem;
+	border-radius: 3px;
+	margin-right: 0.75rem;
+	vertical-align: bottom;
+
+	&[data-marker='localBranches'] {
+		background-color: var(--color-graph-minimap-marker-local-branches);
+	}
+
+	&[data-marker='remoteBranches'] {
+		background-color: var(--color-graph-minimap-marker-remote-branches);
+	}
+
+	&[data-marker='stashes'] {
+		background-color: var(--color-graph-minimap-marker-stashes);
+	}
+
+	&[data-marker='tags'] {
+		background-color: var(--color-graph-minimap-marker-tags);
 	}
 }

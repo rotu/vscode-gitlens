@@ -1,11 +1,12 @@
 import type { ColorTheme, TextDocument, TextDocumentShowOptions, TextEditor, Uri } from 'vscode';
-import { ColorThemeKind, env, ViewColumn, window, workspace } from 'vscode';
-import { CoreCommands, ImageMimetypes, Schemes } from '../constants';
+import { version as codeVersion, ColorThemeKind, env, ViewColumn, window, workspace } from 'vscode';
+import { ImageMimetypes, Schemes } from '../constants';
 import { isGitUri } from '../git/gitUri';
 import { executeCoreCommand } from './command';
 import { configuration } from './configuration';
 import { Logger } from './logger';
 import { extname } from './path';
+import { satisfies } from './version';
 
 export function findTextDocument(uri: Uri): TextDocument | undefined {
 	const normalizedUri = uri.toString();
@@ -53,7 +54,7 @@ export function findOrOpenEditors(uris: Uri[]): void {
 	}
 
 	for (const uri of normalizedUris.values()) {
-		void executeCoreCommand(CoreCommands.Open, uri, { background: true, preview: false });
+		void executeCoreCommand('vscode.open', uri, { background: true, preview: false });
 	}
 }
 
@@ -66,10 +67,13 @@ export function getQuickPickIgnoreFocusOut() {
 	return !configuration.get('advanced.quickPick.closeOnFocusOut');
 }
 
-export function hasVisibleTextEditor(): boolean {
+export function hasVisibleTextEditor(uri?: Uri): boolean {
 	if (window.visibleTextEditors.length === 0) return false;
 
-	return window.visibleTextEditors.some(e => isTextEditor(e));
+	if (uri == null) return window.visibleTextEditors.some(e => isTextEditor(e));
+
+	const url = uri.toString();
+	return window.visibleTextEditors.some(e => e.document.uri.toString() === url && isTextEditor(e));
 }
 
 export function isActiveDocument(document: TextDocument): boolean {
@@ -97,7 +101,7 @@ export function isVisibleDocument(document: TextDocument): boolean {
 
 export function isTextEditor(editor: TextEditor): boolean {
 	const scheme = editor.document.uri.scheme;
-	return scheme !== Schemes.Output && scheme !== Schemes.DebugConsole;
+	return scheme !== Schemes.DebugConsole && scheme !== Schemes.Output && scheme !== Schemes.Terminal;
 }
 
 export async function openEditor(
@@ -111,7 +115,7 @@ export async function openEditor(
 		}
 
 		if (uri.scheme === Schemes.GitLens && ImageMimetypes[extname(uri.fsPath)]) {
-			await executeCoreCommand(CoreCommands.Open, uri);
+			await executeCoreCommand('vscode.open', uri);
 
 			return undefined;
 		}
@@ -126,7 +130,7 @@ export async function openEditor(
 	} catch (ex) {
 		const msg: string = ex?.toString() ?? '';
 		if (msg.includes('File seems to be binary and cannot be opened as text')) {
-			await executeCoreCommand(CoreCommands.Open, uri);
+			await executeCoreCommand('vscode.open', uri);
 
 			return undefined;
 		}
@@ -151,7 +155,7 @@ export async function openWalkthrough(
 
 	// Takes the following params: walkthroughID: string | { category: string, step: string } | undefined, toSide: boolean | undefined
 	void (await executeCoreCommand(
-		CoreCommands.OpenWalkthrough,
+		'workbench.action.openWalkthrough',
 		{
 			category: `${extensionId}#${walkthroughId}`,
 			step: stepId ? `${extensionId}#${walkthroughId}#${stepId}` : undefined,
@@ -160,23 +164,19 @@ export async function openWalkthrough(
 	));
 }
 
-export const enum OpenWorkspaceLocation {
-	CurrentWindow = 'currentWindow',
-	NewWindow = 'newWindow',
-	AddToWorkspace = 'addToWorkspace',
-}
+export type OpenWorkspaceLocation = 'currentWindow' | 'newWindow' | 'addToWorkspace';
 
 export function openWorkspace(
 	uri: Uri,
-	options: { location?: OpenWorkspaceLocation; name?: string } = { location: OpenWorkspaceLocation.CurrentWindow },
+	options: { location?: OpenWorkspaceLocation; name?: string } = { location: 'currentWindow' },
 ): void {
-	if (options?.location === OpenWorkspaceLocation.AddToWorkspace) {
+	if (options?.location === 'addToWorkspace') {
 		const count = workspace.workspaceFolders?.length ?? 0;
 		return void workspace.updateWorkspaceFolders(count, 0, { uri: uri, name: options?.name });
 	}
 
-	return void executeCoreCommand(CoreCommands.OpenFolder, uri, {
-		forceNewWindow: options?.location === OpenWorkspaceLocation.NewWindow,
+	return void executeCoreCommand('vscode.openFolder', uri, {
+		forceNewWindow: options?.location === 'newWindow',
 	});
 }
 
@@ -197,4 +197,13 @@ export function getEditorCommand() {
 			break;
 	}
 	return editor;
+}
+
+export function supportedInVSCodeVersion(feature: 'input-prompt-links') {
+	switch (feature) {
+		case 'input-prompt-links':
+			return satisfies(codeVersion, '>= 1.76');
+		default:
+			return false;
+	}
 }

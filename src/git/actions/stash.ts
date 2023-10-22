@@ -20,6 +20,13 @@ export function drop(repo?: string | Repository, ref?: GitStashReference) {
 	});
 }
 
+export function rename(repo?: string | Repository, ref?: GitStashReference, message?: string) {
+	return executeGitCommand({
+		command: 'stash',
+		state: { subcommand: 'rename', repo: repo, reference: ref, message: message },
+	});
+}
+
 export function pop(repo?: string | Repository, ref?: GitStashReference) {
 	return executeGitCommand({
 		command: 'stash',
@@ -33,6 +40,7 @@ export function push(
 	message?: string,
 	keepStaged: boolean = false,
 	onlyStaged: boolean = false,
+	onlyStagedUris?: Uri[],
 ) {
 	return executeGitCommand({
 		command: 'stash',
@@ -40,6 +48,7 @@ export function push(
 			subcommand: 'push',
 			repo: repo,
 			uris: uris,
+			onlyStagedUris: onlyStagedUris,
 			message: message,
 			flags: [...(keepStaged ? ['--keep-index'] : []), ...(onlyStaged ? ['--staged'] : [])] as PushFlags[],
 		},
@@ -68,5 +77,6 @@ export function showDetailsView(
 	stash: GitStashReference | GitStashCommit,
 	options?: { pin?: boolean; preserveFocus?: boolean },
 ): Promise<void> {
-	return Container.instance.commitDetailsView.show({ ...options, commit: stash });
+	const { preserveFocus, ...opts } = { ...options, commit: stash };
+	return Container.instance.commitDetailsView.show({ preserveFocus: preserveFocus }, opts);
 }

@@ -1,11 +1,11 @@
 import type { TextEditor, TextEditorDecorationType } from 'vscode';
 import { Range } from 'vscode';
-import { FileAnnotationType } from '../config';
+import type { FileAnnotationType } from '../config';
 import type { Container } from '../container';
 import type { GitCommit } from '../git/models/commit';
 import { log } from '../system/decorators/log';
 import { getLogScope } from '../system/logger.scope';
-import { Stopwatch } from '../system/stopwatch';
+import { maybeStopWatch } from '../system/stopwatch';
 import type { GitDocumentState } from '../trackers/gitDocumentTracker';
 import type { TrackedDocument } from '../trackers/trackedDocument';
 import type { AnnotationContext } from './annotationProvider';
@@ -14,7 +14,7 @@ import { BlameAnnotationProviderBase } from './blameAnnotationProvider';
 
 export class GutterHeatmapBlameAnnotationProvider extends BlameAnnotationProviderBase {
 	constructor(editor: TextEditor, trackedDocument: TrackedDocument<GitDocumentState>, container: Container) {
-		super(FileAnnotationType.Heatmap, editor, trackedDocument, container);
+		super('heatmap', editor, trackedDocument, container);
 	}
 
 	@log()
@@ -26,7 +26,7 @@ export class GutterHeatmapBlameAnnotationProvider extends BlameAnnotationProvide
 		const blame = await this.getBlame();
 		if (blame == null) return false;
 
-		const sw = new Stopwatch(scope);
+		using sw = maybeStopWatch(scope);
 
 		const decorationsMap = new Map<
 			string,
@@ -50,12 +50,12 @@ export class GutterHeatmapBlameAnnotationProvider extends BlameAnnotationProvide
 			);
 		}
 
-		sw.restart({ suffix: ' to compute heatmap annotations' });
+		sw?.restart({ suffix: ' to compute heatmap annotations' });
 
 		if (decorationsMap.size) {
 			this.setDecorations([...decorationsMap.values()]);
 
-			sw.stop({ suffix: ' to apply all heatmap annotations' });
+			sw?.stop({ suffix: ' to apply all heatmap annotations' });
 		}
 
 		// this.registerHoverProviders(configuration.get('hovers.annotations'));

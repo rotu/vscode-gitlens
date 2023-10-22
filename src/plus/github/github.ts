@@ -1,27 +1,29 @@
-import { Octokit } from '@octokit/core';
-import { GraphqlResponseError } from '@octokit/graphql';
+import { graphql, GraphqlResponseError } from '@octokit/graphql';
+import { request } from '@octokit/request';
 import { RequestError } from '@octokit/request-error';
 import type { Endpoints, OctokitResponse, RequestParameters } from '@octokit/types';
 import type { HttpsProxyAgent } from 'https-proxy-agent';
-import type { Event } from 'vscode';
-import { Disposable, EventEmitter, Uri, window } from 'vscode';
+import type { CancellationToken, Disposable, Event } from 'vscode';
+import { EventEmitter, Uri, window } from 'vscode';
 import { fetch, getProxyAgent, wrapForForcedInsecureSSL } from '@env/fetch';
 import { isWeb } from '@env/platform';
+import type { CoreConfiguration } from '../../constants';
 import type { Container } from '../../container';
 import {
 	AuthenticationError,
 	AuthenticationErrorReason,
+	CancellationError,
 	ProviderRequestClientError,
 	ProviderRequestNotFoundError,
 	ProviderRequestRateLimitError,
 } from '../../errors';
-import type { PagedResult } from '../../git/gitProvider';
-import { RepositoryVisibility } from '../../git/gitProvider';
+import type { PagedResult, RepositoryVisibility } from '../../git/gitProvider';
 import type { Account } from '../../git/models/author';
 import type { DefaultBranch } from '../../git/models/defaultBranch';
 import type { IssueOrPullRequest, SearchedIssue } from '../../git/models/issue';
 import type { PullRequest, SearchedPullRequest } from '../../git/models/pullRequest';
 import { isSha } from '../../git/models/reference';
+import type { RepositoryMetadata } from '../../git/models/repositoryMetadata';
 import type { GitUser } from '../../git/models/user';
 import { getGitHubNoReplyAddressParts } from '../../git/remotes/github';
 import type { RichRemoteProvider } from '../../git/remotes/richRemoteProvider';
@@ -33,10 +35,9 @@ import { uniqueBy } from '../../system/array';
 import { configuration } from '../../system/configuration';
 import { debug } from '../../system/decorators/log';
 import { Logger } from '../../system/logger';
-import { LogLevel } from '../../system/logger.constants';
 import type { LogScope } from '../../system/logger.scope';
 import { getLogScope } from '../../system/logger.scope';
-import { Stopwatch } from '../../system/stopwatch';
+import { maybeStopWatch } from '../../system/stopwatch';
 import { base64 } from '../../system/string';
 import type { Version } from '../../system/version';
 import { fromString, satisfies } from '../../system/version';
@@ -56,31 +57,37 @@ import type {
 	GitHubPullRequestState,
 	GitHubTag,
 } from './models';
-import { fromGitHubIssueDetailed, fromGitHubPullRequest, fromGitHubPullRequestDetailed } from './models';
+import {
+	fromGitHubIssueDetailed,
+	fromGitHubPullRequest,
+	fromGitHubPullRequestDetailed,
+	fromGitHubPullRequestState,
+} from './models';
 
 const emptyPagedResult: PagedResult<any> = Object.freeze({ values: [] });
 const emptyBlameResult: GitHubBlame = Object.freeze({ ranges: [] });
 
 const prNodeProperties = `
 assignees(first: 10) {
-  nodes {
+	nodes {
+		login
+		avatarUrl
+		url
+	}
+}
+author {
 	login
 	avatarUrl
 	url
-  }
-}
-author {
-  login
-  avatarUrl
-  url
 }
 baseRefName
 baseRefOid
 baseRepository {
-  name
-  owner {
-	login
-  }
+	name
+	owner {
+		login
+	}
+	url
 }
 checksUrl
 isDraft
@@ -89,12 +96,14 @@ isReadByViewer
 headRefName
 headRefOid
 headRepository {
-  name
-  owner {
-	login
-  }
+	name
+	owner {
+		login
+	}
+	url
 }
 permalink
+id
 number
 title
 state
@@ -105,33 +114,27 @@ closedAt
 mergeable
 mergedAt
 mergedBy {
-  login
+	login
 }
 repository {
-  isFork
-  owner {
-	login
-  }
-}
-repository {
-  isFork
-  owner {
-	login
-  }
+	isFork
+	owner {
+		login
+	}
 }
 reviewDecision
 reviewRequests(first: 10) {
-  nodes {
-	asCodeOwner
-	id
-	requestedReviewer {
-	  ... on User {
-		login
-		avatarUrl
-		url
-	  }
+	nodes {
+		asCodeOwner
+		id
+		requestedReviewer {
+			... on User {
+				login
+				avatarUrl
+				url
+			}
+		}
 	}
-  }
 }
 totalCommentsCount
 `;
@@ -153,6 +156,7 @@ const issueNodeProperties = `
 	comments {
 	  totalCount
 	}
+	id
 	number
 	title
 	url
@@ -184,30 +188,26 @@ export class GitHubApi implements Disposable {
 		return this._onDidReauthenticate.event;
 	}
 
-	private _disposable: Disposable | undefined;
+	private readonly _disposable: Disposable;
 
 	constructor(_container: Container) {
-		this._disposable = Disposable.from(
-			configuration.onDidChange(e => {
-				if (configuration.changed(e, 'proxy') || configuration.changed(e, 'outputLevel')) {
-					this.resetCaches();
-				}
-			}),
-			configuration.onDidChangeAny(e => {
-				if (e.affectsConfiguration('http.proxy') || e.affectsConfiguration('http.proxyStrictSSL')) {
-					this.resetCaches();
-				}
-			}),
-		);
+		this._disposable = configuration.onDidChangeAny(e => {
+			if (
+				configuration.changedAny<CoreConfiguration>(e, ['http.proxy', 'http.proxyStrictSSL']) ||
+				configuration.changed(e, ['outputLevel', 'proxy'])
+			) {
+				this.resetCaches();
+			}
+		});
 	}
 
 	dispose(): void {
-		this._disposable?.dispose();
+		this._disposable.dispose();
 	}
 
 	private resetCaches(): void {
 		this._proxyAgent = null;
-		this._octokits.clear();
+		this._defaults.clear();
 		this._enterpriseVersions.clear();
 	}
 
@@ -490,15 +490,19 @@ export class GitHubApi implements Disposable {
 				createdAt
 				closed
 				closedAt
+				id
 				title
 				url
+				state
 			}
 			... on PullRequest {
 				createdAt
 				closed
 				closedAt
+				id
 				title
 				url
+				state
 			}
 		}
 	}
@@ -524,11 +528,13 @@ export class GitHubApi implements Disposable {
 				provider: provider,
 				type: issue.type,
 				id: String(number),
+				nodeId: issue.id,
 				date: new Date(issue.createdAt),
 				title: issue.title,
 				closed: issue.closed,
 				closedDate: issue.closedAt == null ? undefined : new Date(issue.closedAt),
 				url: issue.url,
+				state: fromGitHubPullRequestState(issue.state),
 			};
 		} catch (ex) {
 			if (ex instanceof ProviderRequestNotFoundError) return undefined;
@@ -555,13 +561,14 @@ export class GitHubApi implements Disposable {
 		interface QueryResult {
 			repository:
 				| {
-						refs: {
-							nodes: {
-								associatedPullRequests?: {
-									nodes?: GitHubPullRequest[];
-								};
-							}[];
-						};
+						ref:
+							| {
+									associatedPullRequests?: {
+										nodes?: GitHubPullRequest[];
+									};
+							  }
+							| null
+							| undefined;
 				  }
 				| null
 				| undefined;
@@ -577,27 +584,25 @@ export class GitHubApi implements Disposable {
 	$avatarSize: Int
 ) {
 	repository(name: $repo, owner: $owner) {
-		refs(query: $branch, refPrefix: "refs/heads/", first: 1) {
-			nodes {
-				associatedPullRequests(first: $limit, orderBy: {field: UPDATED_AT, direction: DESC}, states: $include) {
-					nodes {
-						author {
+		ref(qualifiedName: $branch) {
+			associatedPullRequests(first: $limit, orderBy: {field: UPDATED_AT, direction: DESC}, states: $include) {
+				nodes {
+					author {
+						login
+						avatarUrl(size: $avatarSize)
+						url
+					}
+					permalink
+					number
+					title
+					state
+					updatedAt
+					closedAt
+					mergedAt
+					repository {
+						isFork
+						owner {
 							login
-							avatarUrl(size: $avatarSize)
-							url
-						}
-						permalink
-						number
-						title
-						state
-						updatedAt
-						closedAt
-						mergedAt
-						repository {
-							isFork
-							owner {
-								login
-							}
 						}
 					}
 				}
@@ -614,7 +619,7 @@ export class GitHubApi implements Disposable {
 					...options,
 					owner: owner,
 					repo: repo,
-					branch: branch,
+					branch: `refs/heads/${branch}`,
 					// Since GitHub sort doesn't seem to really work, look for a max of 10 PRs and then sort them ourselves
 					limit: 10,
 				},
@@ -622,7 +627,7 @@ export class GitHubApi implements Disposable {
 			);
 
 			// If the pr is not from a fork, keep it e.g. show root pr's on forks, otherwise, ensure the repo owners match
-			const prs = rsp?.repository?.refs.nodes[0]?.associatedPullRequests?.nodes?.filter(
+			const prs = rsp?.repository?.ref?.associatedPullRequests?.nodes?.filter(
 				pr => pr != null && (!pr.repository.isFork || pr.repository.owner.login === owner),
 			);
 			if (prs == null || prs.length === 0) return undefined;
@@ -655,6 +660,7 @@ export class GitHubApi implements Disposable {
 			baseUrl?: string;
 			avatarSize?: number;
 		},
+		cancellation?: CancellationToken,
 	): Promise<PullRequest | undefined> {
 		const scope = getLogScope();
 
@@ -719,6 +725,7 @@ export class GitHubApi implements Disposable {
 					ref: ref,
 				},
 				scope,
+				cancellation,
 			);
 
 			// If the pr is not from a fork, keep it e.g. show root pr's on forks, otherwise, ensure the repo owners match
@@ -737,6 +744,95 @@ export class GitHubApi implements Disposable {
 			}
 
 			return fromGitHubPullRequest(prs[0], provider);
+		} catch (ex) {
+			if (ex instanceof ProviderRequestNotFoundError) return undefined;
+
+			throw this.handleException(ex, provider, scope);
+		}
+	}
+
+	@debug<GitHubApi['getRepositoryMetadata']>({ args: { 0: p => p.name, 1: '<token>' } })
+	async getRepositoryMetadata(
+		provider: RichRemoteProvider,
+		token: string,
+		owner: string,
+		repo: string,
+		options?: {
+			baseUrl?: string;
+		},
+		cancellation?: CancellationToken,
+	): Promise<RepositoryMetadata | undefined> {
+		const scope = getLogScope();
+
+		interface QueryResult {
+			repository:
+				| {
+						owner: {
+							login: string;
+						};
+						name: string;
+						parent:
+							| {
+									owner: {
+										login: string;
+									};
+									name: string;
+							  }
+							| null
+							| undefined;
+				  }
+				| null
+				| undefined;
+		}
+
+		try {
+			const query = `query getRepositoryMetadata(
+	$owner: String!
+	$repo: String!
+) {
+	repository(name: $repo, owner: $owner) {
+		owner {
+			login
+		}
+		name
+		parent {
+			owner {
+				login
+			}
+			name
+		}
+	}
+}`;
+
+			const rsp = await this.graphql<QueryResult>(
+				provider,
+				token,
+				query,
+				{
+					...options,
+					owner: owner,
+					repo: repo,
+				},
+				scope,
+				cancellation,
+			);
+
+			const r = rsp?.repository ?? undefined;
+			if (r == null) return undefined;
+
+			return {
+				provider: provider,
+				owner: r.owner.login,
+				name: r.name,
+				isFork: r.parent != null,
+				parent:
+					r.parent != null
+						? {
+								owner: r.parent.owner.login,
+								name: r.parent.name,
+						  }
+						: undefined,
+			};
 		} catch (ex) {
 			if (ex instanceof ProviderRequestNotFoundError) return undefined;
 
@@ -860,7 +956,7 @@ export class GitHubApi implements Disposable {
 	$limit: Int = 100
 ) {
 	repository(owner: $owner, name: $repo) {
-		refs(query: $branchQuery, refPrefix: "refs/heads/", first: $limit, after: $cursor, orderBy: { field: TAG_COMMIT_DATE, direction: DESC }) {
+		refs(query: $branchQuery, refPrefix: "refs/heads/", first: $limit, after: $cursor) {
 			pageInfo {
 				endCursor
 				hasNextPage
@@ -869,7 +965,6 @@ export class GitHubApi implements Disposable {
 				name
 				target {
 					oid
-					commitUrl
 					...on Commit {
 						authoredDate
 						committedDate
@@ -1015,7 +1110,7 @@ export class GitHubApi implements Disposable {
 	$until: GitTimestamp!
 ) {
 	repository(owner: $owner, name: $repo) {
-		refs(first: 20, refPrefix: "refs/heads/", orderBy: { field: TAG_COMMIT_DATE, direction: DESC }) {
+		refs(first: 20, refPrefix: "refs/heads/") {
 			nodes {
 				name
 				target {
@@ -1501,6 +1596,82 @@ export class GitHubApi implements Disposable {
 		}
 	}
 
+	@debug<GitHubApi['getCommitTags']>({ args: { 0: '<token>' } })
+	async getCommitTags(token: string, owner: string, repo: string, ref: string, date: Date): Promise<string[]> {
+		const scope = getLogScope();
+
+		interface QueryResult {
+			repository: {
+				refs: {
+					nodes: {
+						name: string;
+						target: {
+							history: {
+								nodes: { oid: string }[];
+							};
+						};
+					}[];
+				};
+			};
+		}
+
+		try {
+			const query = `query getCommitTags(
+	$owner: String!
+	$repo: String!
+	$since: GitTimestamp!
+	$until: GitTimestamp!
+) {
+	repository(owner: $owner, name: $repo) {
+		refs(first: 20, refPrefix: "refs/tags/") {
+			nodes {
+				name
+				target {
+					... on Commit {
+						history(first: 3, since: $since until: $until) {
+							nodes { oid }
+						}
+					}
+				}
+			}
+		}
+	}
+}`;
+			const rsp = await this.graphql<QueryResult>(
+				undefined,
+				token,
+				query,
+				{
+					owner: owner,
+					repo: repo,
+					since: date.toISOString(),
+					until: date.toISOString(),
+				},
+				scope,
+			);
+
+			const nodes = rsp?.repository?.refs?.nodes;
+			if (nodes == null) return [];
+
+			const tags = [];
+
+			for (const tag of nodes) {
+				for (const commit of tag.target.history.nodes) {
+					if (commit.oid === ref) {
+						tags.push(tag.name);
+						break;
+					}
+				}
+			}
+
+			return tags;
+		} catch (ex) {
+			if (ex instanceof ProviderRequestNotFoundError) return [];
+
+			throw this.handleException(ex, undefined, scope);
+		}
+	}
+
 	@debug<GitHubApi['getNextCommitRefs']>({ args: { 0: '<token>' } })
 	async getNextCommitRefs(
 		token: string,
@@ -1748,7 +1919,7 @@ export class GitHubApi implements Disposable {
 			);
 			if (rsp?.repository?.visibility == null) return undefined;
 
-			return rsp.repository.visibility === 'PUBLIC' ? RepositoryVisibility.Public : RepositoryVisibility.Private;
+			return rsp.repository.visibility === 'PUBLIC' ? 'public' : 'private';
 		} catch (ex) {
 			if (ex instanceof ProviderRequestNotFoundError) return undefined;
 
@@ -1798,15 +1969,17 @@ export class GitHubApi implements Disposable {
 				name
 				target {
 					oid
-					commitUrl
+					...on Tag {
+						message
+						tagger { date }
+						target {
 					...on Commit {
+								oid
 						authoredDate
 						committedDate
 						message
 					}
-					...on Tag {
-						message
-						tagger { date }
+						}
 					}
 				}
 			}
@@ -2097,7 +2270,7 @@ export class GitHubApi implements Disposable {
 
 	private _enterpriseVersions = new Map<string, Version | null>();
 
-	@debug<GitHubApi['getEnterpriseVersion']>({ args: { 0: '<token>' } })
+	@debug<GitHubApi['getEnterpriseVersion']>({ args: { 0: p => p?.name, 1: '<token>' } })
 	private async getEnterpriseVersion(
 		provider: RichRemoteProvider | undefined,
 		token: string,
@@ -2122,66 +2295,30 @@ export class GitHubApi implements Disposable {
 		return version ?? undefined;
 	}
 
-	private _octokits = new Map<string, Octokit>();
-	private octokit(token: string, options?: ConstructorParameters<typeof Octokit>[0]): Octokit {
-		let octokit = this._octokits.get(token);
-		if (octokit == null) {
-			let defaults;
-			if (isWeb) {
-				function fetchCore(url: string, options: { headers?: Record<string, string> }) {
-					if (options.headers != null) {
-						// Strip out the user-agent (since it causes warnings in a webworker)
-						const { 'user-agent': userAgent, ...headers } = options.headers;
-						if (userAgent) {
-							options.headers = headers;
-						}
-					}
-					return fetch(url, options);
-				}
-
-				defaults = Octokit.defaults({
-					auth: `token ${token}`,
-					request: { fetch: fetchCore },
-				});
-			} else {
-				defaults = Octokit.defaults({ auth: `token ${token}`, request: { agent: this.proxyAgent } });
-			}
-
-			octokit = new defaults(options);
-			this._octokits.set(token, octokit);
-
-			if (Logger.logLevel === LogLevel.Debug || Logger.isDebugging) {
-				octokit.hook.wrap('request', async (request, options) => {
-					const stopwatch = new Stopwatch(`[GITHUB] ${options.method} ${options.url}`, { log: false });
-					try {
-						return await request(options);
-					} finally {
-						let message;
-						try {
-							if (typeof options.query === 'string') {
-								const match = /(^[^({\n]+)/.exec(options.query);
-								message = ` ${match?.[1].trim() ?? options.query}`;
-							}
-						} catch {}
-						stopwatch.stop({ message: message });
-					}
-				});
-			}
-		}
-
-		return octokit;
-	}
-
 	private async graphql<T>(
 		provider: RichRemoteProvider | undefined,
 		token: string,
 		query: string,
-		variables: { [key: string]: any },
+		variables: RequestParameters,
 		scope: LogScope | undefined,
+		cancellation?: CancellationToken | undefined,
 	): Promise<T | undefined> {
 		try {
+			let aborter: AbortController | undefined;
+			if (cancellation != null) {
+				if (cancellation.isCancellationRequested) throw new CancellationError();
+
+				aborter = new AbortController();
+				cancellation.onCancellationRequested(() => aborter!.abort());
+
+				variables = {
+					...variables,
+					request: { ...variables?.request, signal: aborter.signal },
+				};
+			}
+
 			return await wrapForForcedInsecureSSL(provider?.getIgnoreSSLErrors() ?? false, () =>
-				this.octokit(token).graphql<T>(query, variables),
+				this.getDefaults(token, graphql)(query, variables),
 			);
 		} catch (ex) {
 			if (ex instanceof GraphqlResponseError) {
@@ -2208,7 +2345,7 @@ export class GitHubApi implements Disposable {
 				if (Logger.isDebugging) {
 					void window.showErrorMessage(`GitHub request failed: ${ex.errors?.[0]?.message ?? ex.message}`);
 				}
-			} else if (ex instanceof RequestError) {
+			} else if (ex instanceof RequestError || ex.name === 'AbortError') {
 				this.handleRequestError(provider, token, ex, scope);
 			} else if (Logger.isDebugging) {
 				void window.showErrorMessage(`GitHub request failed: ${ex.message}`);
@@ -2226,13 +2363,30 @@ export class GitHubApi implements Disposable {
 			| (R extends keyof Endpoints ? Endpoints[R]['parameters'] & RequestParameters : RequestParameters)
 			| undefined,
 		scope: LogScope | undefined,
-	): Promise<R extends keyof Endpoints ? Endpoints[R]['response'] : OctokitResponse<unknown>> {
+		cancellation?: CancellationToken | undefined,
+	): Promise<R extends keyof Endpoints ? Endpoints[R]['response'] : OctokitResponse<any>> {
 		try {
-			return (await wrapForForcedInsecureSSL(provider?.getIgnoreSSLErrors() ?? false, () =>
-				this.octokit(token).request<R>(route, options),
-			)) as R extends keyof Endpoints ? Endpoints[R]['response'] : OctokitResponse<unknown>;
+			let aborter: AbortController | undefined;
+			if (cancellation != null) {
+				if (cancellation.isCancellationRequested) throw new CancellationError();
+
+				aborter = new AbortController();
+				cancellation.onCancellationRequested(() => aborter!.abort());
+				options = {
+					...options,
+					request: { ...options?.request, signal: aborter.signal },
+				} as unknown as typeof options;
+			}
+
+			return await wrapForForcedInsecureSSL(
+				provider?.getIgnoreSSLErrors() ?? false,
+				() =>
+					this.getDefaults(token, request)<R>(route, options) as unknown as Promise<
+						R extends keyof Endpoints ? Endpoints[R]['response'] : OctokitResponse<any>
+					>,
+			);
 		} catch (ex) {
-			if (ex instanceof RequestError) {
+			if (ex instanceof RequestError || ex.name === 'AbortError') {
 				this.handleRequestError(provider, token, ex, scope);
 			} else if (Logger.isDebugging) {
 				void window.showErrorMessage(`GitHub request failed: ${ex.message}`);
@@ -2242,12 +2396,75 @@ export class GitHubApi implements Disposable {
 		}
 	}
 
+	private _defaults = new Map<typeof request | typeof graphql, Map<string, typeof request | typeof graphql>>();
+	private getDefaults(token: string, rqst: typeof request): typeof request;
+	private getDefaults(token: string, gql: typeof graphql): typeof graphql;
+	private getDefaults(
+		token: string,
+		requestOrGraphQL: typeof request | typeof graphql,
+	): typeof request | typeof graphql {
+		let map = this._defaults.get(requestOrGraphQL);
+		if (map == null) {
+			map = new Map();
+			this._defaults.set(requestOrGraphQL, map);
+		}
+
+		let defaults = map.get(token);
+		if (defaults == null) {
+			defaults = requestOrGraphQL.defaults({
+				headers: {
+					authorization: `token ${token}`,
+				},
+				request: {
+					agent: this.proxyAgent,
+					fetch: isWeb
+						? (url: string, options: { headers?: Record<string, string> }) => {
+								if (options.headers != null) {
+									// Strip out the user-agent (since it causes warnings in a webworker)
+									const { 'user-agent': userAgent, ...headers } = options.headers;
+									if (userAgent) {
+										options.headers = headers;
+									}
+								}
+								return fetch(url, options);
+						  }
+						: fetch,
+					hook:
+						Logger.logLevel === 'debug' || Logger.isDebugging
+							? async (rqst: typeof request, options: any) => {
+									const sw = maybeStopWatch(`[GITHUB] ${options.method} ${options.url}`, {
+										log: false,
+									});
+									try {
+										return await rqst(options);
+									} finally {
+										let message;
+										try {
+											if (typeof options.query === 'string') {
+												const match = /(^[^({\n]+)/.exec(options.query);
+												message = ` ${match?.[1].trim() ?? options.query}`;
+											}
+										} catch {}
+										sw?.stop({ message: message });
+									}
+							  }
+							: undefined,
+				},
+			});
+			map.set(token, defaults);
+		}
+
+		return defaults;
+	}
+
 	private handleRequestError(
 		provider: RichRemoteProvider | undefined,
 		token: string,
-		ex: RequestError,
+		ex: RequestError | (Error & { name: 'AbortError' }),
 		scope: LogScope | undefined,
 	): void {
+		if (ex.name === 'AbortError') throw new CancellationError();
+
 		switch (ex.status) {
 			case 404: // Not found
 			case 410: // Gone
@@ -2328,7 +2545,7 @@ export class GitHubApi implements Disposable {
 
 			if (result === confirm) {
 				await provider?.reauthenticate();
-
+				this.resetCaches();
 				this._onDidReauthenticate.fire();
 			}
 		} else {
@@ -2383,7 +2600,7 @@ export class GitHubApi implements Disposable {
 	async searchMyPullRequests(
 		provider: RichRemoteProvider,
 		token: string,
-		options?: { search?: string; user?: string; repos?: string[] },
+		options?: { search?: string; user?: string; repos?: string[]; baseUrl?: string },
 	): Promise<SearchedPullRequest[]> {
 		const scope = getLogScope();
 
@@ -2454,7 +2671,7 @@ export class GitHubApi implements Disposable {
 
 			const baseFilters = 'is:pr is:open archived:false';
 			const resp = await this.graphql<SearchResult>(
-				undefined,
+				provider,
 				token,
 				query,
 				{
@@ -2462,6 +2679,7 @@ export class GitHubApi implements Disposable {
 					assigned: `${search} ${baseFilters} assignee:@me`.trim(),
 					reviewRequested: `${search} ${baseFilters} review-requested:@me`.trim(),
 					mentioned: `${search} ${baseFilters} mentions:@me`.trim(),
+					baseUrl: options?.baseUrl,
 				},
 				scope,
 			);
@@ -2485,15 +2703,15 @@ export class GitHubApi implements Disposable {
 			);
 			return results;
 		} catch (ex) {
-			throw this.handleException(ex, undefined, scope);
+			throw this.handleException(ex, provider, scope);
 		}
 	}
 
-	@debug<GitHubApi['searchMyIssues']>({ args: { 0: '<token>' } })
+	@debug<GitHubApi['searchMyIssues']>({ args: { 0: p => p.name, 1: '<token>' } })
 	async searchMyIssues(
 		provider: RichRemoteProvider,
 		token: string,
-		options?: { search?: string; user?: string; repos?: string[] },
+		options?: { search?: string; user?: string; repos?: string[]; baseUrl?: string },
 	): Promise<SearchedIssue[] | undefined> {
 		const scope = getLogScope();
 		interface SearchResult {
@@ -2547,13 +2765,14 @@ export class GitHubApi implements Disposable {
 		const baseFilters = 'type:issue is:open archived:false';
 		try {
 			const resp = await this.graphql<SearchResult>(
-				undefined,
+				provider,
 				token,
 				query,
 				{
 					authored: `${search} ${baseFilters} author:@me`.trim(),
 					assigned: `${search} ${baseFilters} assignee:@me`.trim(),
 					mentioned: `${search} ${baseFilters} mentions:@me`.trim(),
+					baseUrl: options?.baseUrl,
 				},
 				scope,
 			);
@@ -2577,7 +2796,7 @@ export class GitHubApi implements Disposable {
 			);
 			return results;
 		} catch (ex) {
-			throw this.handleException(ex, undefined, scope);
+			throw this.handleException(ex, provider, scope);
 		}
 	}
 }

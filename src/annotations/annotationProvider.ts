@@ -9,15 +9,12 @@ import type {
 } from 'vscode';
 import { Disposable, window } from 'vscode';
 import type { FileAnnotationType } from '../config';
-import { ContextKeys } from '../constants';
-import { setContext } from '../context';
+import { setContext } from '../system/context';
 import { Logger } from '../system/logger';
-import type { GitDocumentState, TrackedDocument } from '../trackers/gitDocumentTracker';
+import type { GitDocumentState } from '../trackers/gitDocumentTracker';
+import type { TrackedDocument } from '../trackers/trackedDocument';
 
-export const enum AnnotationStatus {
-	Computing = 'computing',
-	Computed = 'computed',
-}
+export type AnnotationStatus = 'computing' | 'computed';
 
 export interface AnnotationContext {
 	selection?: { sha?: string; line?: undefined } | { sha?: undefined; line?: number } | false;
@@ -114,9 +111,9 @@ export abstract class AnnotationProviderBase<TContext extends AnnotationContext 
 		// Explicitly check for `false`
 		if ((this.editor as any)._disposed === false) return;
 
-		this.status = AnnotationStatus.Computing;
+		this.status = 'computing';
 		if (editor === window.activeTextEditor) {
-			await setContext(ContextKeys.AnnotationStatus, this.status);
+			await setContext('gitlens:annotationStatus', this.status);
 		}
 
 		this.editor = editor;
@@ -129,17 +126,17 @@ export abstract class AnnotationProviderBase<TContext extends AnnotationContext 
 			}
 		}
 
-		this.status = AnnotationStatus.Computed;
+		this.status = 'computed';
 		if (editor === window.activeTextEditor) {
-			await setContext(ContextKeys.AnnotationStatus, this.status);
+			await setContext('gitlens:annotationStatus', this.status);
 		}
 	}
 
 	async provideAnnotation(context?: TContext): Promise<boolean> {
-		this.status = AnnotationStatus.Computing;
+		this.status = 'computing';
 		try {
 			if (await this.onProvideAnnotation(context)) {
-				this.status = AnnotationStatus.Computed;
+				this.status = 'computed';
 				return true;
 			}
 		} catch (ex) {

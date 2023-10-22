@@ -2,7 +2,7 @@
 import { hrtime } from '@env/hrtime';
 import { getParameters } from '../function';
 import { getLoggableName, Logger } from '../logger';
-import { LogLevel, slowCallWarningThreshold } from '../logger.constants';
+import { slowCallWarningThreshold } from '../logger.constants';
 import type { LogScope } from '../logger.scope';
 import { clearLogScope, getNextLogScopeId, setLogScope } from '../logger.scope';
 import { isPromise } from '../promise';
@@ -31,7 +31,7 @@ interface LogOptions<T extends (...arg: any) => any> {
 		  };
 	condition?(...args: Parameters<T>): boolean;
 	enter?(...args: Parameters<T>): string;
-	exit?(result: PromiseType<ReturnType<T>>): string;
+	exit?: ((result: PromiseType<ReturnType<T>>) => string) | boolean;
 	prefix?(context: LogContext, ...args: Parameters<T>): string;
 	sanitize?(key: string, value: any): any;
 	logThreshold?: number;
@@ -61,10 +61,10 @@ export function log<T extends (...arg: any) => any>(options?: LogOptions<T>, deb
 	let exitFn: LogOptions<T>['exit'] | undefined;
 	let prefixFn: LogOptions<T>['prefix'] | undefined;
 	let sanitizeFn: LogOptions<T>['sanitize'] | undefined;
-	let logThreshold = 0;
-	let scoped = false;
-	let singleLine = false;
-	let timed = true;
+	let logThreshold: NonNullable<LogOptions<T>['logThreshold']> = 0;
+	let scoped: NonNullable<LogOptions<T>['scoped']> = false;
+	let singleLine: NonNullable<LogOptions<T>['singleLine']> = false;
+	let timed: NonNullable<LogOptions<T>['timed']> = true;
 	if (options != null) {
 		({
 			args: overrides,
@@ -110,9 +110,7 @@ export function log<T extends (...arg: any) => any>(options?: LogOptions<T>, deb
 			const scopeId = getNextLogScopeId();
 
 			if (
-				(!Logger.isDebugging &&
-					!Logger.enabled(LogLevel.Debug) &&
-					!(Logger.enabled(LogLevel.Info) && !debug)) ||
+				(!Logger.isDebugging && !Logger.enabled('debug') && !(Logger.enabled('info') && !debug)) ||
 				(conditionFn != null && !conditionFn(...args))
 			) {
 				return fn!.apply(this, args);
@@ -200,7 +198,7 @@ export function log<T extends (...arg: any) => any>(options?: LogOptions<T>, deb
 				if (!singleLine) {
 					logFn(
 						`${prefix}${enter}${
-							loggableParams && (debug || Logger.enabled(LogLevel.Debug) || Logger.isDebugging)
+							loggableParams && (debug || Logger.enabled('debug') || Logger.isDebugging)
 								? `(${loggableParams})`
 								: emptyStr
 						}`,
@@ -212,7 +210,7 @@ export function log<T extends (...arg: any) => any>(options?: LogOptions<T>, deb
 				const start = timed ? hrtime() : undefined;
 
 				const logError = (ex: Error) => {
-					const timing = start !== undefined ? ` \u2022 ${getDurationMilliseconds(start)} ms` : emptyStr;
+					const timing = start !== undefined ? ` [${getDurationMilliseconds(start)}ms]` : emptyStr;
 					if (singleLine) {
 						Logger.error(
 							ex,
@@ -244,10 +242,10 @@ export function log<T extends (...arg: any) => any>(options?: LogOptions<T>, deb
 						duration = getDurationMilliseconds(start);
 						if (duration > slowCallWarningThreshold) {
 							exitLogFn = warnFn;
-							timing = ` \u2022 ${duration} ms (slow)`;
+							timing = ` [*${duration}ms] (slow)`;
 						} else {
 							exitLogFn = logFn;
-							timing = ` \u2022 ${duration} ms`;
+							timing = ` [${duration}ms]`;
 						}
 					} else {
 						timing = emptyStr;
@@ -256,10 +254,14 @@ export function log<T extends (...arg: any) => any>(options?: LogOptions<T>, deb
 
 					let exit;
 					if (exitFn != null) {
-						try {
-							exit = exitFn(r);
-						} catch (ex) {
-							exit = `@log.exit error: ${ex}`;
+						if (typeof exitFn === 'function') {
+							try {
+								exit = exitFn(r);
+							} catch (ex) {
+								exit = `@log.exit error: ${ex}`;
+							}
+						} else if (exitFn === true) {
+							exit = `returned ${Logger.toLoggable(r)}`;
 						}
 					} else {
 						exit = 'completed';
@@ -269,7 +271,7 @@ export function log<T extends (...arg: any) => any>(options?: LogOptions<T>, deb
 						if (logThreshold === 0 || duration! > logThreshold) {
 							exitLogFn(
 								`${prefix}${enter}${
-									loggableParams && (debug || Logger.enabled(LogLevel.Debug) || Logger.isDebugging)
+									loggableParams && (debug || Logger.enabled('debug') || Logger.isDebugging)
 										? `(${loggableParams})`
 										: emptyStr
 								} ${exit}${scope?.exitDetails ? scope.exitDetails : emptyStr}${timing}`,
@@ -278,7 +280,7 @@ export function log<T extends (...arg: any) => any>(options?: LogOptions<T>, deb
 					} else {
 						exitLogFn(
 							`${prefix}${
-								loggableParams && (debug || Logger.enabled(LogLevel.Debug) || Logger.isDebugging)
+								loggableParams && (debug || Logger.enabled('debug') || Logger.isDebugging)
 									? `(${loggableParams})`
 									: emptyStr
 							} ${exit}${scope?.exitDetails ? scope.exitDetails : emptyStr}${timing}`,

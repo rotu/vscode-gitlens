@@ -1,11 +1,11 @@
 import type { Event, QuickPickItem } from 'vscode';
 import { Disposable, EventEmitter, window } from 'vscode';
 import type { Config } from '../config';
-import { Commands, ContextKeys } from '../constants';
+import { Commands } from '../constants';
 import type { Container } from '../container';
-import { setContext } from '../context';
 import { registerCommand } from '../system/command';
 import { configuration } from '../system/configuration';
+import { setContext } from '../system/context';
 import { sortCompare } from '../system/string';
 import { getQuickPickIgnoreFocusOut } from '../system/utils';
 import type { Action, ActionContext, ActionRunner } from './gitlens';
@@ -28,7 +28,10 @@ export const builtInActionRunnerName = 'Built In';
 class ActionRunnerQuickPickItem implements QuickPickItem {
 	private readonly _label: string;
 
-	constructor(public readonly runner: RegisteredActionRunner, context: ActionContext) {
+	constructor(
+		public readonly runner: RegisteredActionRunner,
+		context: ActionContext,
+	) {
 		this._label = typeof runner.label === 'string' ? runner.label : runner.label(context);
 	}
 
@@ -326,7 +329,7 @@ export class ActionRunners implements Disposable {
 	}
 
 	private async _updateContextKeys(action: Actions) {
-		await setContext(`${ContextKeys.ActionPrefix}${action}`, this.count(action));
+		await setContext(`gitlens:action:${action}`, this.count(action));
 	}
 
 	private async _updateAllContextKeys() {

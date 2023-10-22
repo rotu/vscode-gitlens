@@ -1,16 +1,13 @@
 import type { Disposable, TextDocumentShowOptions } from 'vscode';
 import { env, Uri, window } from 'vscode';
 import type { CreatePullRequestActionContext, OpenPullRequestActionContext } from '../api/gitlens';
-import type {
-	DiffWithCommandArgs,
-	DiffWithPreviousCommandArgs,
-	DiffWithWorkingCommandArgs,
-	OpenFileAtRevisionCommandArgs,
-} from '../commands';
-import { FileAnnotationType, ViewShowBranchComparison } from '../config';
-import { Commands, ContextKeys, CoreCommands, CoreGitCommands } from '../constants';
+import type { DiffWithCommandArgs } from '../commands/diffWith';
+import type { DiffWithPreviousCommandArgs } from '../commands/diffWithPrevious';
+import type { DiffWithWorkingCommandArgs } from '../commands/diffWithWorking';
+import type { OpenFileAtRevisionCommandArgs } from '../commands/openFileAtRevision';
+import type { ViewShowBranchComparison } from '../config';
+import { Commands } from '../constants';
 import type { Container } from '../container';
-import { setContext } from '../context';
 import { browseAtRevision } from '../git/actions';
 import * as BranchActions from '../git/actions/branch';
 import * as CommitActions from '../git/actions/commit';
@@ -22,8 +19,10 @@ import * as TagActions from '../git/actions/tag';
 import * as WorktreeActions from '../git/actions/worktree';
 import { GitUri } from '../git/gitUri';
 import { deletedOrMissing } from '../git/models/constants';
+import { matchContributor } from '../git/models/contributor';
 import type { GitStashReference } from '../git/models/reference';
 import { createReference, getReferenceLabel, shortenRevision } from '../git/models/reference';
+import { showContributorsPicker } from '../quickpicks/contributorsPicker';
 import {
 	executeActionCommand,
 	executeCommand,
@@ -33,9 +32,11 @@ import {
 	registerCommand,
 } from '../system/command';
 import { configuration } from '../system/configuration';
+import { setContext } from '../system/context';
 import { debug } from '../system/decorators/log';
 import { sequentialize } from '../system/function';
-import { openWorkspace, OpenWorkspaceLocation } from '../system/utils';
+import type { OpenWorkspaceLocation } from '../system/utils';
+import { openWorkspace } from '../system/utils';
 import type { BranchesNode } from './nodes/branchesNode';
 import { BranchNode } from './nodes/branchNode';
 import { BranchTrackingStatusNode } from './nodes/branchTrackingStatusNode';
@@ -137,6 +138,7 @@ export class ViewCommands {
 			},
 			this,
 		);
+		registerViewCommand('gitlens.views.collapseNode', () => executeCoreCommand('list.collapseAllToFocus'), this);
 		registerViewCommand(
 			'gitlens.views.dismissNode',
 			(n: ViewNode) => canViewDismissNode(n.view) && n.view.dismissNode(n),
@@ -246,12 +248,12 @@ export class ViewCommands {
 
 		registerViewCommand(
 			'gitlens.views.setBranchComparisonToWorking',
-			n => this.setBranchComparison(n, ViewShowBranchComparison.Working),
+			n => this.setBranchComparison(n, 'working'),
 			this,
 		);
 		registerViewCommand(
 			'gitlens.views.setBranchComparisonToBranch',
-			n => this.setBranchComparison(n, ViewShowBranchComparison.Branch),
+			n => this.setBranchComparison(n, 'branch'),
 			this,
 		);
 
@@ -263,7 +265,8 @@ export class ViewCommands {
 		registerViewCommand('gitlens.views.renameBranch', this.renameBranch, this);
 
 		registerViewCommand('gitlens.views.title.applyStash', () => this.applyStash());
-		registerViewCommand('gitlens.views.deleteStash', this.deleteStash, this, ViewCommandMultiSelectMode.Custom);
+		registerViewCommand('gitlens.views.stash.delete', this.deleteStash, this, ViewCommandMultiSelectMode.Custom);
+		registerViewCommand('gitlens.views.stash.rename', this.renameStash, this);
 
 		registerViewCommand('gitlens.views.title.createTag', () => this.createTag());
 		registerViewCommand('gitlens.views.createTag', this.createTag, this);
@@ -278,6 +281,7 @@ export class ViewCommands {
 
 		registerViewCommand('gitlens.views.resetCommit', this.resetCommit, this);
 		registerViewCommand('gitlens.views.resetToCommit', this.resetToCommit, this);
+		registerViewCommand('gitlens.views.resetToTip', this.resetToTip, this);
 		registerViewCommand('gitlens.views.revert', this.revert, this);
 		registerViewCommand('gitlens.views.undoCommit', this.undoCommit, this);
 
@@ -288,10 +292,22 @@ export class ViewCommands {
 		registerViewCommand('gitlens.views.createWorktree', this.createWorktree, this);
 		registerViewCommand('gitlens.views.deleteWorktree', this.deleteWorktree, this);
 		registerViewCommand('gitlens.views.openWorktree', this.openWorktree, this);
+		registerViewCommand('gitlens.views.revealRepositoryInExplorer', this.revealRepositoryInExplorer, this);
 		registerViewCommand('gitlens.views.revealWorktreeInExplorer', this.revealWorktreeInExplorer, this);
 		registerViewCommand(
 			'gitlens.views.openWorktreeInNewWindow',
-			n => this.openWorktree(n, { location: OpenWorkspaceLocation.NewWindow }),
+			n => this.openWorktree(n, { location: 'newWindow' }),
+			this,
+		);
+
+		registerViewCommand(
+			'gitlens.views.setResultsCommitsFilterAuthors',
+			n => this.setResultsCommitsFilter(n, true),
+			this,
+		);
+		registerViewCommand(
+			'gitlens.views.setResultsCommitsFilterOff',
+			n => this.setResultsCommitsFilter(n, false),
 			this,
 		);
 	}
@@ -341,8 +357,11 @@ export class ViewCommands {
 	}
 
 	@debug()
-	private browseRepoAtRevision(node: ViewRefNode, options?: { before?: boolean; openInNewWindow?: boolean }) {
-		if (!(node instanceof ViewRefNode)) return Promise.resolve();
+	private browseRepoAtRevision(
+		node: ViewRefNode | ViewRefFileNode,
+		options?: { before?: boolean; openInNewWindow?: boolean },
+	) {
+		if (!(node instanceof ViewRefNode) && !(node instanceof ViewRefFileNode)) return Promise.resolve();
 
 		return browseAtRevision(node.uri, {
 			before: options?.before,
@@ -372,9 +391,9 @@ export class ViewCommands {
 	}
 
 	@debug()
-	private async createBranch(node?: ViewRefNode | BranchesNode | BranchTrackingStatusNode) {
+	private async createBranch(node?: ViewRefNode | ViewRefFileNode | BranchesNode | BranchTrackingStatusNode) {
 		let from =
-			node instanceof ViewRefNode
+			node instanceof ViewRefNode || node instanceof ViewRefFileNode
 				? node?.ref
 				: node instanceof BranchTrackingStatusNode
 				? node.branch
@@ -422,9 +441,9 @@ export class ViewCommands {
 	}
 
 	@debug()
-	private async createTag(node?: ViewRefNode | TagsNode | BranchTrackingStatusNode) {
+	private async createTag(node?: ViewRefNode | ViewRefFileNode | TagsNode | BranchTrackingStatusNode) {
 		let from =
-			node instanceof ViewRefNode
+			node instanceof ViewRefNode || node instanceof ViewRefFileNode
 				? node?.ref
 				: node instanceof BranchTrackingStatusNode
 				? node.branch
@@ -472,6 +491,13 @@ export class ViewCommands {
 	}
 
 	@debug()
+	private renameStash(node: StashNode) {
+		if (!(node instanceof StashNode)) return Promise.resolve();
+
+		return StashActions.rename(node.repoPath, node.commit);
+	}
+
+	@debug()
 	private deleteTag(node: TagNode) {
 		if (!(node instanceof TagNode)) return Promise.resolve();
 
@@ -510,7 +536,7 @@ export class ViewCommands {
 		await this.openFile(node, { preserveFocus: true, preview: true });
 		void (await this.container.fileAnnotations.toggle(
 			window.activeTextEditor,
-			FileAnnotationType.Changes,
+			'changes',
 			{ sha: node.ref.ref },
 			true,
 		));
@@ -532,7 +558,7 @@ export class ViewCommands {
 		await this.openFile(node, { preserveFocus: true, preview: true });
 		void (await this.container.fileAnnotations.toggle(
 			window.activeTextEditor,
-			FileAnnotationType.Changes,
+			'changes',
 			{ sha: node.ref.ref, only: true },
 			true,
 		));
@@ -549,7 +575,7 @@ export class ViewCommands {
 	private openInTerminal(node: RepositoryNode | RepositoryFolderNode) {
 		if (!(node instanceof RepositoryNode) && !(node instanceof RepositoryFolderNode)) return Promise.resolve();
 
-		return executeCoreCommand(CoreCommands.OpenInTerminal, Uri.file(node.repo.path));
+		return executeCoreCommand('openInTerminal', Uri.file(node.repo.path));
 	}
 
 	@debug()
@@ -572,23 +598,23 @@ export class ViewCommands {
 
 	@debug()
 	private openWorktree(node: WorktreeNode, options?: { location?: OpenWorkspaceLocation }) {
-		if (!(node instanceof WorktreeNode)) return undefined;
+		if (!(node instanceof WorktreeNode)) return;
 
-		return openWorkspace(node.worktree.uri, options);
+		openWorkspace(node.worktree.uri, options);
 	}
 
 	@debug()
 	private pruneRemote(node: RemoteNode) {
 		if (!(node instanceof RemoteNode)) return Promise.resolve();
 
-		return RemoteActions.prune(node.repo, node.remote.name);
+		return RemoteActions.prune(node.remote.repoPath, node.remote.name);
 	}
 
 	@debug()
 	private async removeRemote(node: RemoteNode) {
 		if (!(node instanceof RemoteNode)) return Promise.resolve();
 
-		return RemoteActions.remove(node.repo, node.remote.name);
+		return RemoteActions.remove(node.remote.repoPath, node.remote.name);
 	}
 
 	@debug()
@@ -602,7 +628,7 @@ export class ViewCommands {
 	@debug()
 	private publishRepository(node: BranchNode | BranchTrackingStatusNode) {
 		if (node instanceof BranchNode || node instanceof BranchTrackingStatusNode) {
-			return executeCoreGitCommand(CoreGitCommands.Publish, Uri.file(node.repoPath));
+			return executeCoreGitCommand('git.publish', Uri.file(node.repoPath));
 		}
 		return Promise.resolve();
 	}
@@ -714,10 +740,27 @@ export class ViewCommands {
 	}
 
 	@debug()
+	private resetToTip(node: BranchNode) {
+		if (!(node instanceof BranchNode)) return Promise.resolve();
+
+		return RepoActions.reset(
+			node.repoPath,
+			createReference(node.ref.ref, node.repoPath, { refType: 'revision', name: node.ref.name }),
+		);
+	}
+
+	@debug()
 	private restore(node: ViewRefFileNode) {
 		if (!(node instanceof ViewRefFileNode)) return Promise.resolve();
 
 		return CommitActions.restoreFile(node.file, node.ref);
+	}
+
+	@debug()
+	private revealRepositoryInExplorer(node: RepositoryNode) {
+		if (!(node instanceof RepositoryNode)) return undefined;
+
+		return RepoActions.revealInFileExplorer(node.repo);
 	}
 
 	@debug()
@@ -823,7 +866,7 @@ export class ViewCommands {
 			return;
 		}
 
-		await executeCoreGitCommand(CoreGitCommands.UndoCommit, node.repoPath);
+		await executeCoreGitCommand('git.undoCommit', node.repoPath);
 	}
 
 	@debug()
@@ -843,7 +886,7 @@ export class ViewCommands {
 			return;
 		}
 
-		await this.container.git.unStageFile(node.repoPath, node.file.path);
+		await this.container.git.unstageFile(node.repoPath, node.file.path);
 		void node.triggerChange();
 	}
 
@@ -851,7 +894,7 @@ export class ViewCommands {
 	private async unstageDirectory(node: FolderNode) {
 		if (!(node instanceof FolderNode) || !node.relativePath) return;
 
-		await this.container.git.unStageDirectory(node.repoPath, node.relativePath);
+		await this.container.git.unstageDirectory(node.repoPath, node.relativePath);
 		void node.triggerChange();
 	}
 
@@ -869,8 +912,12 @@ export class ViewCommands {
 	}
 
 	@debug()
-	private compareHeadWith(node: ViewRefNode) {
-		if (!(node instanceof ViewRefNode)) return Promise.resolve();
+	private compareHeadWith(node: ViewRefNode | ViewRefFileNode) {
+		if (!(node instanceof ViewRefNode) && !(node instanceof ViewRefFileNode)) return Promise.resolve();
+
+		if (node instanceof ViewRefFileNode) {
+			return this.compareFileWith(node.repoPath, node.uri, node.ref.ref, undefined, 'HEAD');
+		}
 
 		return this.container.searchAndCompareView.compare(node.repoPath, 'HEAD', node.ref);
 	}
@@ -884,8 +931,12 @@ export class ViewCommands {
 	}
 
 	@debug()
-	private compareWorkingWith(node: ViewRefNode) {
-		if (!(node instanceof ViewRefNode)) return Promise.resolve();
+	private compareWorkingWith(node: ViewRefNode | ViewRefFileNode) {
+		if (!(node instanceof ViewRefNode) && !(node instanceof ViewRefFileNode)) return Promise.resolve();
+
+		if (node instanceof ViewRefFileNode) {
+			return this.compareFileWith(node.repoPath, node.uri, node.ref.ref, undefined, '');
+		}
 
 		return this.container.searchAndCompareView.compare(node.repoPath, '', node.ref);
 	}
@@ -911,17 +962,41 @@ export class ViewCommands {
 	}
 
 	@debug()
-	private compareWithSelected(node: ViewRefNode) {
-		if (!(node instanceof ViewRefNode)) return;
+	private compareWithSelected(node: ViewRefNode | ViewRefFileNode) {
+		if (!(node instanceof ViewRefNode) && !(node instanceof ViewRefFileNode)) return;
 
 		this.container.searchAndCompareView.compareWithSelected(node.repoPath, node.ref);
 	}
 
 	@debug()
-	private selectForCompare(node: ViewRefNode) {
-		if (!(node instanceof ViewRefNode)) return;
+	private selectForCompare(node: ViewRefNode | ViewRefFileNode) {
+		if (!(node instanceof ViewRefNode) && !(node instanceof ViewRefFileNode)) return;
 
 		this.container.searchAndCompareView.selectForCompare(node.repoPath, node.ref);
+	}
+
+	private async compareFileWith(
+		repoPath: string,
+		lhsUri: Uri,
+		lhsRef: string,
+		rhsUri: Uri | undefined,
+		rhsRef: string,
+	) {
+		if (rhsUri == null) {
+			rhsUri = await this.container.git.getWorkingUri(repoPath, lhsUri);
+		}
+
+		return executeCommand<DiffWithCommandArgs>(Commands.DiffWith, {
+			repoPath: repoPath,
+			lhs: {
+				sha: lhsRef,
+				uri: lhsUri,
+			},
+			rhs: {
+				sha: rhsRef,
+				uri: rhsUri ?? lhsUri,
+			},
+		});
 	}
 
 	@debug()
@@ -938,19 +1013,9 @@ export class ViewCommands {
 		const selected = this._selectedFile;
 
 		this._selectedFile = undefined;
-		void setContext(ContextKeys.ViewsCanCompareFile, false);
+		void setContext('gitlens:views:canCompare:file', false);
 
-		return executeCommand<DiffWithCommandArgs>(Commands.DiffWith, {
-			repoPath: selected.repoPath,
-			lhs: {
-				sha: selected.ref,
-				uri: selected.uri!,
-			},
-			rhs: {
-				sha: node.ref.ref,
-				uri: node.uri,
-			},
-		});
+		return this.compareFileWith(selected.repoPath!, selected.uri!, selected.ref, node.uri, node.ref.ref);
 	}
 
 	private _selectedFile: CompareSelectedInfo | undefined;
@@ -964,7 +1029,7 @@ export class ViewCommands {
 			repoPath: node.repoPath,
 			uri: node.uri,
 		};
-		void setContext(ContextKeys.ViewsCanCompareFile, true);
+		void setContext('gitlens:views:canCompare:file', true);
 	}
 
 	@debug()
@@ -1264,5 +1329,48 @@ export class ViewCommands {
 		}
 
 		return CommitActions.openFilesAtRevision(node.commit);
+	}
+
+	@debug()
+	private async setResultsCommitsFilter(node: ViewNode, filter: boolean) {
+		if (!node?.is('compare-results') && !node?.is('compare-branch')) return;
+
+		const repo = this.container.git.getRepository(node.repoPath);
+		if (repo == null) return;
+
+		if (filter) {
+			let authors = node.getState('filterCommits');
+			if (authors == null) {
+				const current = await this.container.git.getCurrentUser(repo.uri);
+				authors = current != null ? [current] : undefined;
+			}
+
+			const result = await showContributorsPicker(
+				this.container,
+				repo,
+				'Filter Commits',
+				repo.virtual ? 'Choose a contributor to show commits from' : 'Choose contributors to show commits from',
+				{
+					appendReposToTitle: true,
+					clearButton: true,
+					multiselect: !repo.virtual,
+					picked: c => authors?.some(u => matchContributor(c, u)) ?? false,
+				},
+			);
+			if (result == null) return;
+
+			if (result.length === 0) {
+				filter = false;
+				node.deleteState('filterCommits');
+			} else {
+				node.storeState('filterCommits', result);
+			}
+		} else if (repo != null) {
+			node.deleteState('filterCommits');
+		} else {
+			node.deleteState('filterCommits');
+		}
+
+		void node.triggerChange(true);
 	}
 }

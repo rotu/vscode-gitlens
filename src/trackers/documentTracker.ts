@@ -10,30 +10,32 @@ import type {
 	TextLine,
 } from 'vscode';
 import { Disposable, EndOfLine, env, EventEmitter, Uri, window, workspace } from 'vscode';
-import { ContextKeys } from '../constants';
 import type { Container } from '../container';
-import { setContext } from '../context';
 import type { RepositoriesChangeEvent } from '../git/gitProviderService';
 import type { GitUri } from '../git/gitUri';
 import { isGitUri } from '../git/gitUri';
 import type { RepositoryChangeEvent } from '../git/models/repository';
 import { RepositoryChange, RepositoryChangeComparisonMode } from '../git/models/repository';
 import { configuration } from '../system/configuration';
+import { setContext } from '../system/context';
 import { debug } from '../system/decorators/log';
 import { once } from '../system/event';
 import type { Deferrable } from '../system/function';
 import { debounce } from '../system/function';
 import { filter, join, map } from '../system/iterable';
 import { findTextDocument, isActiveDocument, isTextEditor } from '../system/utils';
-import type { DocumentBlameStateChangeEvent } from './trackedDocument';
 import { TrackedDocument } from './trackedDocument';
-
-export * from './trackedDocument';
 
 export interface DocumentContentChangeEvent<T> {
 	readonly editor: TextEditor;
 	readonly document: TrackedDocument<T>;
-	readonly contentChanges: ReadonlyArray<TextDocumentContentChangeEvent>;
+	readonly contentChanges: readonly TextDocumentContentChangeEvent[];
+}
+
+export interface DocumentBlameStateChangeEvent<T> {
+	readonly editor: TextEditor;
+	readonly document: TrackedDocument<T>;
+	readonly blameable: boolean;
 }
 
 export interface DocumentDirtyStateChangeEvent<T> {
@@ -112,7 +114,7 @@ export class DocumentTracker<T> implements Disposable {
 			this._timer = setTimeout(() => {
 				this._timer = undefined;
 
-				void setContext(ContextKeys.ActiveFileStatus, undefined);
+				void setContext('gitlens:activeFileStatus', undefined);
 			}, 250);
 
 			return;
@@ -361,16 +363,12 @@ export class DocumentTracker<T> implements Disposable {
 
 			if (this._dirtyIdleTriggerDelay > 0) {
 				if (this._dirtyIdleTriggeredDebounced == null) {
-					this._dirtyIdleTriggeredDebounced = debounce(
-						(e: DocumentDirtyIdleTriggerEvent<T>) => {
-							if (this._dirtyIdleTriggeredDebounced?.pending!()) return;
+					this._dirtyIdleTriggeredDebounced = debounce((e: DocumentDirtyIdleTriggerEvent<T>) => {
+						if (this._dirtyIdleTriggeredDebounced?.pending!()) return;
 
-							e.document.isDirtyIdle = true;
-							this._onDidTriggerDirtyIdle.fire(e);
-						},
-						this._dirtyIdleTriggerDelay,
-						{ track: true },
-					);
+						e.document.isDirtyIdle = true;
+						this._onDidTriggerDirtyIdle.fire(e);
+					}, this._dirtyIdleTriggerDelay);
 				}
 
 				this._dirtyIdleTriggeredDebounced({ editor: e.editor, document: e.document });

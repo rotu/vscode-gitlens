@@ -8,7 +8,8 @@ import type { GitCommit } from '../git/models/commit';
 import { changesMessage, detailsMessage } from '../hovers/hovers';
 import { configuration } from '../system/configuration';
 import { log } from '../system/decorators/log';
-import type { GitDocumentState, TrackedDocument } from '../trackers/gitDocumentTracker';
+import type { GitDocumentState } from '../trackers/gitDocumentTracker';
+import type { TrackedDocument } from '../trackers/trackedDocument';
 import { AnnotationProviderBase } from './annotationProvider';
 import type { ComputedHeatmap } from './annotations';
 import { getHeatmapColors } from './annotations';
@@ -172,7 +173,13 @@ export abstract class BlameAnnotationProviderBase extends AnnotationProviderBase
 			await Promise.all([
 				providers.details ? this.getDetailsHoverMessage(commit, document) : undefined,
 				providers.changes
-					? changesMessage(commit, await GitUri.fromUri(document.uri), position.line, document)
+					? changesMessage(
+							this.container,
+							commit,
+							await GitUri.fromUri(document.uri),
+							position.line,
+							document,
+					  )
 					: undefined,
 			])
 		).filter(<T>(m?: T): m is T => Boolean(m));
@@ -190,19 +197,13 @@ export abstract class BlameAnnotationProviderBase extends AnnotationProviderBase
 		editorLine = commitLine.originalLine - 1;
 
 		const cfg = configuration.get('hovers');
-		return detailsMessage(
-			commit,
-			await GitUri.fromUri(document.uri),
-			editorLine,
-			cfg.detailsMarkdownFormat,
-			configuration.get('defaultDateFormat'),
-			{
-				autolinks: cfg.autolinks.enabled,
-				pullRequests: {
-					enabled: cfg.pullRequests.enabled,
-				},
-			},
-		);
+		return detailsMessage(this.container, commit, await GitUri.fromUri(document.uri), editorLine, {
+			autolinks: cfg.autolinks.enabled,
+			dateFormat: configuration.get('defaultDateFormat'),
+			format: cfg.detailsMarkdownFormat,
+			pullRequests: cfg.pullRequests.enabled,
+			timeout: 250,
+		});
 	}
 }
 

@@ -18,12 +18,14 @@ export function flatten(
 ): Record<string, NonNullable<any>>;
 export function flatten(
 	o: any,
-	options: { arrays?: 'join' | 'spread'; prefix?: string; skipPaths?: string[]; skipNulls?: false; stringify: true },
+	options: {
+		arrays?: 'join' | 'spread';
+		prefix?: string;
+		skipPaths?: string[];
+		skipNulls?: false;
+		stringify: true | 'all';
+	},
 ): Record<string, string | null>;
-export function flatten(
-	o: any,
-	options: { arrays?: 'join' | 'spread'; prefix?: string; skipPaths?: string[]; skipNulls?: false; stringify: 'all' },
-): Record<string, string>;
 export function flatten(
 	o: any,
 	options?: {
@@ -44,12 +46,11 @@ export function flatten(
 		stringify?: boolean | 'all';
 	},
 ): Record<string, any> {
-	const skipPaths =
-		options?.skipPaths != null && options.skipPaths.length
-			? options?.prefix
-				? options.skipPaths.map(p => `${options.prefix}.${p}`)
-				: options.skipPaths
-			: undefined;
+	const skipPaths = options?.skipPaths?.length
+		? options?.prefix
+			? options.skipPaths.map(p => `${options.prefix}.${p}`)
+			: options.skipPaths
+		: undefined;
 	const skipNulls = options?.skipNulls ?? false;
 	const stringify = options?.stringify ?? false;
 

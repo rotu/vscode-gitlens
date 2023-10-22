@@ -1,19 +1,31 @@
 import type { Uri } from 'vscode';
 import type { WorktreeGitCommandArgs } from '../../commands/git/worktree';
-import { CoreCommands } from '../../constants';
 import { Container } from '../../container';
 import { ensure } from '../../system/array';
 import { executeCoreCommand } from '../../system/command';
-import { OpenWorkspaceLocation } from '../../system/utils';
+import type { OpenWorkspaceLocation } from '../../system/utils';
 import { executeGitCommand } from '../actions';
 import type { GitReference } from '../models/reference';
 import type { Repository } from '../models/repository';
 import type { GitWorktree } from '../models/worktree';
 
-export function create(repo?: string | Repository, uri?: Uri, ref?: GitReference, options?: { reveal?: boolean }) {
+export function create(
+	repo?: string | Repository,
+	uri?: Uri,
+	ref?: GitReference,
+	options?: { createBranch?: string; reveal?: boolean },
+) {
 	return executeGitCommand({
 		command: 'worktree',
-		state: { subcommand: 'create', repo: repo, uri: uri, reference: ref, reveal: options?.reveal },
+		state: {
+			subcommand: 'create',
+			repo: repo,
+			uri: uri,
+			reference: ref,
+			createBranch: options?.createBranch,
+			flags: options?.createBranch ? ['-b'] : undefined,
+			reveal: options?.reveal,
+		},
 	});
 }
 
@@ -54,7 +66,7 @@ export async function reveal(
 }
 
 export async function revealInFileExplorer(worktree: GitWorktree) {
-	void (await executeCoreCommand(CoreCommands.RevealInFileExplorer, worktree.uri));
+	void (await executeCoreCommand('revealFileInOS', worktree.uri));
 }
 
 type OpenFlagsArray = Extract<NonNullable<Required<WorktreeGitCommandArgs['state']>>, { subcommand: 'open' }>['flags'];
@@ -63,11 +75,11 @@ export function convertLocationToOpenFlags(location: OpenWorkspaceLocation | und
 	if (location == null) return undefined;
 
 	switch (location) {
-		case OpenWorkspaceLocation.NewWindow:
+		case 'newWindow':
 			return ['--new-window'];
-		case OpenWorkspaceLocation.AddToWorkspace:
+		case 'addToWorkspace':
 			return ['--add-to-workspace'];
-		case OpenWorkspaceLocation.CurrentWindow:
+		case 'currentWindow':
 		default:
 			return [];
 	}
@@ -76,7 +88,7 @@ export function convertLocationToOpenFlags(location: OpenWorkspaceLocation | und
 export function convertOpenFlagsToLocation(flags: OpenFlagsArray | undefined): OpenWorkspaceLocation | undefined {
 	if (flags == null) return undefined;
 
-	if (flags.includes('--new-window')) return OpenWorkspaceLocation.NewWindow;
-	if (flags.includes('--add-to-workspace')) return OpenWorkspaceLocation.AddToWorkspace;
-	return OpenWorkspaceLocation.CurrentWindow;
+	if (flags.includes('--new-window')) return 'newWindow';
+	if (flags.includes('--add-to-workspace')) return 'addToWorkspace';
+	return 'currentWindow';
 }

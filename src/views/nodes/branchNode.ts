@@ -1,26 +1,23 @@
 import { MarkdownString, ThemeColor, ThemeIcon, TreeItem, TreeItemCollapsibleState, Uri, window } from 'vscode';
 import type { ViewShowBranchComparison } from '../../config';
-import { ViewBranchesLayout } from '../../config';
-import { Colors, ContextKeys, GlyphChars } from '../../constants';
-import { getContext } from '../../context';
+import type { Colors } from '../../constants';
+import { GlyphChars } from '../../constants';
 import type { GitUri } from '../../git/gitUri';
 import type { GitBranch } from '../../git/models/branch';
 import type { GitLog } from '../../git/models/log';
-import type { PullRequest } from '../../git/models/pullRequest';
-import { PullRequestState } from '../../git/models/pullRequest';
+import type { PullRequest, PullRequestState } from '../../git/models/pullRequest';
 import type { GitBranchReference } from '../../git/models/reference';
-import { GitRemote, GitRemoteType } from '../../git/models/remote';
+import { GitRemote } from '../../git/models/remote';
+import type { Repository } from '../../git/models/repository';
 import type { GitUser } from '../../git/models/user';
+import { getContext } from '../../system/context';
 import { gate } from '../../system/decorators/gate';
 import { debug, log } from '../../system/decorators/log';
 import { map } from '../../system/iterable';
 import type { Deferred } from '../../system/promise';
 import { defer, getSettledValue } from '../../system/promise';
 import { pad } from '../../system/string';
-import type { BranchesView } from '../branchesView';
-import type { CommitsView } from '../commitsView';
-import { RemotesView } from '../remotesView';
-import type { RepositoriesView } from '../repositoriesView';
+import type { ViewsWithBranches } from '../viewBase';
 import { BranchTrackingStatusNode } from './branchTrackingStatusNode';
 import { CommitNode } from './commitNode';
 import { LoadMoreNode, MessageNode } from './common';
@@ -29,9 +26,8 @@ import { insertDateMarkers } from './helpers';
 import { MergeStatusNode } from './mergeStatusNode';
 import { PullRequestNode } from './pullRequestNode';
 import { RebaseStatusNode } from './rebaseStatusNode';
-import { RepositoryNode } from './repositoryNode';
 import type { PageableViewNode, ViewNode } from './viewNode';
-import { ContextValues, ViewRefNode } from './viewNode';
+import { ContextValues, getViewNodeId, ViewRefNode } from './viewNode';
 
 type State = {
 	pullRequest: PullRequest | null | undefined;
@@ -39,13 +35,10 @@ type State = {
 };
 
 export class BranchNode
-	extends ViewRefNode<BranchesView | CommitsView | RemotesView | RepositoriesView, GitBranchReference, State>
+	extends ViewRefNode<'branch', ViewsWithBranches, GitBranchReference, State>
 	implements PageableViewNode
 {
-	static key = ':branch';
-	static getId(repoPath: string, name: string, root: boolean): string {
-		return `${RepositoryNode.getId(repoPath)}${this.key}(${name})${root ? ':root' : ''}`;
-	}
+	limit: number | undefined;
 
 	private readonly options: {
 		expanded: boolean;
@@ -53,6 +46,7 @@ export class BranchNode
 		showAsCommits: boolean;
 		showComparison: false | ViewShowBranchComparison;
 		showCurrent: boolean;
+		showMergeCommits?: boolean;
 		showStatus: boolean;
 		showTracking: boolean;
 		authors?: GitUser[];
@@ -61,24 +55,29 @@ export class BranchNode
 
 	constructor(
 		uri: GitUri,
-		view: BranchesView | CommitsView | RemotesView | RepositoriesView,
-		parent: ViewNode,
+		view: ViewsWithBranches,
+		public override parent: ViewNode,
+		public readonly repo: Repository,
 		public readonly branch: GitBranch,
 		// Specifies that the node is shown as a root
 		public readonly root: boolean,
-
 		options?: {
 			expanded?: boolean;
 			limitCommits?: boolean;
 			showAsCommits?: boolean;
 			showComparison?: false | ViewShowBranchComparison;
 			showCurrent?: boolean;
+			showMergeCommits?: boolean;
 			showStatus?: boolean;
 			showTracking?: boolean;
 			authors?: GitUser[];
 		},
 	) {
-		super(uri, view, parent);
+		super('branch', uri, view, parent);
+
+		this.updateContext({ repository: repo, branch: branch, root: root });
+		this._uniqueId = getViewNodeId(this.type, this.context);
+		this.limit = this.view.getNodeLastKnownLimit(this);
 
 		this.options = {
 			expanded: false,
@@ -95,12 +94,12 @@ export class BranchNode
 		};
 	}
 
-	override toClipboard(): string {
-		return this.branch.name;
+	override get id(): string {
+		return this._uniqueId;
 	}
 
-	override get id(): string {
-		return BranchNode.getId(this.branch.repoPath, this.branch.name, this.root);
+	override toClipboard(): string {
+		return this.branch.name;
 	}
 
 	compacted: boolean = false;
@@ -114,7 +113,7 @@ export class BranchNode
 
 		const branchName = this.branch.getNameWithoutRemote();
 		return `${
-			this.view.config.branches?.layout !== ViewBranchesLayout.Tree ||
+			this.view.config.branches?.layout !== 'tree' ||
 			this.compacted ||
 			this.root ||
 			this.current ||
@@ -148,14 +147,14 @@ export class BranchNode
 				this.view.config.pullRequests.enabled &&
 				this.view.config.pullRequests.showForBranches &&
 				(branch.upstream != null || branch.remote) &&
-				getContext(ContextKeys.HasConnectedRemotes)
+				getContext('gitlens:hasConnectedRemotes')
 			) {
 				pullRequest = this.getState('pullRequest');
 				if (pullRequest === undefined && this.getState('pendingPullRequest') === undefined) {
 					onCompleted = defer<void>();
 					const prPromise = this.getAssociatedPullRequest(
 						branch,
-						this.root ? { include: [PullRequestState.Open, PullRequestState.Merged] } : undefined,
+						this.root ? { include: ['opened', 'merged'] } : undefined,
 					);
 
 					queueMicrotask(async () => {
@@ -182,7 +181,7 @@ export class BranchNode
 
 						// Refresh this node to add the pull request node or remove the spinner
 						if (spinner || pr != null) {
-							this.view.triggerNodeChange(this);
+							this.view.triggerNodeChange(this.root ? this.parent ?? this : this);
 						}
 					});
 				}
@@ -211,6 +210,7 @@ export class BranchNode
 								? this.view.container.git.getLogRefsOnly(this.uri.repoPath!, {
 										limit: 0,
 										ref: range,
+										merges: this.options.showMergeCommits,
 								  })
 								: undefined,
 					  )
@@ -221,7 +221,7 @@ export class BranchNode
 
 			const children = [];
 
-			if (this.options.showComparison !== false && !(this.view instanceof RemotesView)) {
+			if (this.options.showComparison !== false && this.view.type !== 'remotes') {
 				children.push(
 					new CompareBranchNode(
 						this.uri,
@@ -360,6 +360,10 @@ export class BranchNode
 		if (this.options.showAsCommits) {
 			contextValue += '+commits';
 		}
+		// TODO@axosoft-ramint Temporary workaround, remove when our git commands work on closed repos.
+		if (this.repo.closed) {
+			contextValue += '+closed';
+		}
 
 		let color: ThemeColor | undefined;
 		let description;
@@ -374,11 +378,11 @@ export class BranchNode
 						let left;
 						let right;
 						for (const { type } of remote.urls) {
-							if (type === GitRemoteType.Fetch) {
+							if (type === 'fetch') {
 								left = true;
 
 								if (right) break;
-							} else if (type === GitRemoteType.Push) {
+							} else if (type === 'push') {
 								right = true;
 
 								if (left) break;
@@ -426,12 +430,12 @@ export class BranchNode
 				if (this.branch.state.ahead || this.branch.state.behind) {
 					if (this.branch.state.ahead) {
 						contextValue += '+ahead';
-						color = new ThemeColor(Colors.UnpublishedChangesIconColor);
+						color = new ThemeColor('gitlens.unpublishedChangesIconColor' satisfies Colors);
 						iconSuffix = '-green';
 					}
 					if (this.branch.state.behind) {
 						contextValue += '+behind';
-						color = new ThemeColor(Colors.UnpulledChangesIconColor);
+						color = new ThemeColor('gitlens.unpulledChangesIconColor' satisfies Colors);
 						iconSuffix = this.branch.state.ahead ? '-yellow' : '-red';
 					}
 				}
@@ -555,6 +559,7 @@ export class BranchNode
 				limit: limit,
 				ref: this.ref.ref,
 				authors: this.options?.authors,
+				merges: this.options?.showMergeCommits,
 			});
 		}
 
@@ -565,7 +570,6 @@ export class BranchNode
 		return this._log?.hasMore ?? true;
 	}
 
-	limit: number | undefined = this.view.getNodeLastKnownLimit(this);
 	@gate()
 	async loadMore(limit?: number | { until?: any }) {
 		let log = await window.withProgress(

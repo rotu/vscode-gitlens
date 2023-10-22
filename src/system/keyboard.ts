@@ -1,10 +1,11 @@
 import { Disposable } from 'vscode';
-import { commandPrefix, ContextKeys } from '../constants';
-import { setContext } from '../context';
+import type { Keys } from '../constants';
+import { extensionPrefix, keys } from '../constants';
 import { registerCommand } from './command';
+import { setContext } from './context';
 import { log } from './decorators/log';
 import { Logger } from './logger';
-import { getLogScope } from './logger.scope';
+import { getLogScope, setLogScopeExit } from './logger.scope';
 
 export declare interface KeyCommand {
 	onDidPressKey?(key: Keys): void | Promise<void>;
@@ -13,25 +14,8 @@ export declare interface KeyCommand {
 const keyNoopCommand = Object.create(null) as KeyCommand;
 export { keyNoopCommand as KeyNoopCommand };
 
-export const keys = [
-	'left',
-	'alt+left',
-	'ctrl+left',
-	'right',
-	'alt+right',
-	'ctrl+right',
-	'alt+,',
-	'alt+.',
-	'alt+enter',
-	'ctrl+enter',
-	'escape',
-] as const;
-export type Keys = (typeof keys)[number];
-
 export type KeyMapping = { [K in Keys]?: KeyCommand | (() => Promise<KeyCommand>) };
-type IndexableKeyMapping = KeyMapping & {
-	[index: string]: KeyCommand | (() => Promise<KeyCommand>) | undefined;
-};
+type IndexableKeyMapping = KeyMapping & Record<string, KeyCommand | (() => Promise<KeyCommand>) | undefined>;
 
 const mappings: KeyMapping[] = [];
 
@@ -54,9 +38,7 @@ export class KeyboardScope implements Disposable {
 		const index = mappings.indexOf(this._mapping);
 
 		const scope = getLogScope();
-		if (scope != null) {
-			scope.exitDetails = ` \u2022 index=${index}`;
-		}
+		setLogScopeExit(scope, ` \u2022 index=${index}`);
 
 		if (index === mappings.length - 1) {
 			mappings.pop();
@@ -80,15 +62,13 @@ export class KeyboardScope implements Disposable {
 
 		const mapping = mappings[mappings.length - 1];
 		if (mapping !== this._mapping || mapping[key] == null) {
-			if (scope != null) {
-				scope.exitDetails = ' \u2022 skipped';
-			}
+			setLogScopeExit(scope, ' \u2022 skipped');
 
 			return;
 		}
 
 		mapping[key] = undefined;
-		await setContext(`${ContextKeys.KeyPrefix}${key}`, false);
+		await setContext(`${extensionPrefix}:key:${key}`, false);
 	}
 
 	@log({
@@ -131,9 +111,7 @@ export class KeyboardScope implements Disposable {
 
 		const mapping = mappings[mappings.length - 1];
 		if (mapping !== this._mapping) {
-			if (scope != null) {
-				scope.exitDetails = ' \u2022 skipped';
-			}
+			setLogScopeExit(scope, ' \u2022 skipped');
 
 			return;
 		}
@@ -142,12 +120,12 @@ export class KeyboardScope implements Disposable {
 
 		mapping[key] = command;
 		if (!set) {
-			await setContext(`${ContextKeys.KeyPrefix}${key}`, true);
+			await setContext(`${extensionPrefix}:key:${key}`, true);
 		}
 	}
 
 	private async updateKeyCommandsContext(mapping: KeyMapping) {
-		await Promise.all(keys.map(key => setContext(`${ContextKeys.KeyPrefix}${key}`, Boolean(mapping?.[key]))));
+		await Promise.all(keys.map(key => setContext(`${extensionPrefix}:key:${key}`, Boolean(mapping?.[key]))));
 	}
 }
 
@@ -156,7 +134,7 @@ export class Keyboard implements Disposable {
 
 	constructor() {
 		const subscriptions = keys.map(key =>
-			registerCommand(`${commandPrefix}.key.${key}`, () => this.execute(key), this),
+			registerCommand(`${extensionPrefix}.key.${key}`, () => this.execute(key), this),
 		);
 		this._disposable = Disposable.from(...subscriptions);
 	}
@@ -190,9 +168,7 @@ export class Keyboard implements Disposable {
 		const scope = getLogScope();
 
 		if (!mappings.length) {
-			if (scope != null) {
-				scope.exitDetails = ' \u2022 skipped, no mappings';
-			}
+			setLogScopeExit(scope, ' \u2022 skipped, no mappings');
 
 			return;
 		}
@@ -205,9 +181,7 @@ export class Keyboard implements Disposable {
 				command = await command();
 			}
 			if (typeof command?.onDidPressKey !== 'function') {
-				if (scope != null) {
-					scope.exitDetails = ' \u2022 skipped, no callback';
-				}
+				setLogScopeExit(scope, ' \u2022 skipped, no callback');
 
 				return;
 			}

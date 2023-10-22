@@ -5,25 +5,19 @@ import type { Container } from '../container';
 import type { GitCommit } from '../git/models/commit';
 import { configuration } from '../system/configuration';
 import { debug } from '../system/decorators/log';
-import { getLogScope } from '../system/logger.scope';
+import { getLogScope, setLogScopeExit } from '../system/logger.scope';
 import type {
 	DocumentBlameStateChangeEvent,
 	DocumentContentChangeEvent,
 	DocumentDirtyIdleTriggerEvent,
 	DocumentDirtyStateChangeEvent,
-	GitDocumentState,
-} from './gitDocumentTracker';
+} from './documentTracker';
+import type { GitDocumentState } from './gitDocumentTracker';
 import type { LinesChangeEvent, LineSelection } from './lineTracker';
 import { LineTracker } from './lineTracker';
 
-export * from './lineTracker';
-
-export class GitLineState {
-	constructor(public readonly commit: GitCommit | undefined) {
-		if (commit != null && commit.file == null) {
-			debugger;
-		}
-	}
+export interface GitLineState {
+	commit: GitCommit;
 }
 
 export class GitLineTracker extends LineTracker<GitLineState> {
@@ -32,14 +26,12 @@ export class GitLineTracker extends LineTracker<GitLineState> {
 	}
 
 	protected override async fireLinesChanged(e: LinesChangeEvent) {
-		this.reset();
-
 		let updated = false;
 		if (!this.suspended && !e.pending && e.selections != null && e.editor != null) {
 			updated = await this.updateState(e.selections, e.editor);
 		}
 
-		return super.fireLinesChanged(updated ? e : { ...e, selections: undefined });
+		super.fireLinesChanged(updated ? e : { ...e, selections: undefined, suspended: this.suspended });
 	}
 
 	private _subscriptionOnlyWhenActive: Disposable | undefined;
@@ -68,38 +60,36 @@ export class GitLineTracker extends LineTracker<GitLineState> {
 
 	@debug<GitLineTracker['onBlameStateChanged']>({
 		args: {
-			0: e =>
-				`editor=${e.editor.document.uri.toString(true)}, doc=${e.document.uri.toString(true)}, blameable=${
-					e.blameable
-				}`,
+			0: e => `editor/doc=${e.editor.document.uri.toString(true)}, blameable=${e.blameable}`,
 		},
 	})
 	private onBlameStateChanged(_e: DocumentBlameStateChangeEvent<GitDocumentState>) {
-		this.trigger('editor');
+		this.notifyLinesChanged('editor');
 	}
 
 	@debug<GitLineTracker['onContentChanged']>({
 		args: {
-			0: e => `editor=${e.editor.document.uri.toString(true)}, doc=${e.document.uri.toString(true)}`,
+			0: e => `editor/doc=${e.editor.document.uri.toString(true)}`,
 		},
 	})
 	private onContentChanged(e: DocumentContentChangeEvent<GitDocumentState>) {
 		if (
-			e.contentChanges.some(scope =>
-				this.selections?.some(
-					selection =>
-						(scope.range.end.line >= selection.active && selection.active >= scope.range.start.line) ||
-						(scope.range.start.line >= selection.active && selection.active >= scope.range.end.line),
-				),
+			e.contentChanges.some(
+				scope =>
+					this.selections?.some(
+						selection =>
+							(scope.range.end.line >= selection.active && selection.active >= scope.range.start.line) ||
+							(scope.range.start.line >= selection.active && selection.active >= scope.range.end.line),
+					),
 			)
 		) {
-			this.trigger('editor');
+			this.notifyLinesChanged('editor');
 		}
 	}
 
 	@debug<GitLineTracker['onDirtyIdleTriggered']>({
 		args: {
-			0: e => `editor=${e.editor.document.uri.toString(true)}, doc=${e.document.uri.toString(true)}`,
+			0: e => `editor/doc=${e.editor.document.uri.toString(true)}`,
 		},
 	})
 	private onDirtyIdleTriggered(e: DocumentDirtyIdleTriggerEvent<GitDocumentState>) {
@@ -111,10 +101,7 @@ export class GitLineTracker extends LineTracker<GitLineState> {
 
 	@debug<GitLineTracker['onDirtyStateChanged']>({
 		args: {
-			0: e =>
-				`editor=${e.editor.document.uri.toString(true)}, doc=${e.document.uri.toString(true)}, dirty=${
-					e.dirty
-				}`,
+			0: e => `editor/doc=${e.editor.document.uri.toString(true)}, dirty=${e.dirty}`,
 		},
 	})
 	private onDirtyStateChanged(e: DocumentDirtyStateChangeEvent<GitDocumentState>) {
@@ -127,24 +114,20 @@ export class GitLineTracker extends LineTracker<GitLineState> {
 
 	@debug<GitLineTracker['updateState']>({
 		args: { 0: selections => selections?.map(s => s.active).join(','), 1: e => e.document.uri.toString(true) },
-		exit: updated => `returned ${updated}`,
+		exit: true,
 	})
 	private async updateState(selections: LineSelection[], editor: TextEditor): Promise<boolean> {
 		const scope = getLogScope();
 
 		if (!this.includes(selections)) {
-			if (scope != null) {
-				scope.exitDetails = ` ${GlyphChars.Dot} lines no longer match`;
-			}
+			setLogScopeExit(scope, ` ${GlyphChars.Dot} lines no longer match`);
 
 			return false;
 		}
 
 		const trackedDocument = await this.container.tracker.getOrAdd(editor.document);
 		if (!trackedDocument.isBlameable) {
-			if (scope != null) {
-				scope.exitDetails = ` ${GlyphChars.Dot} document is not blameable`;
-			}
+			setLogScopeExit(scope, ` ${GlyphChars.Dot} document is not blameable`);
 
 			return false;
 		}
@@ -156,44 +139,50 @@ export class GitLineTracker extends LineTracker<GitLineState> {
 				editor?.document,
 			);
 			if (blameLine == null) {
-				if (scope != null) {
-					scope.exitDetails = ` ${GlyphChars.Dot} blame failed`;
-				}
+				setLogScopeExit(scope, ` ${GlyphChars.Dot} blame failed`);
 
 				return false;
 			}
 
-			this.setState(blameLine.line.line - 1, new GitLineState(blameLine.commit));
+			if (blameLine.commit != null && blameLine.commit.file == null) {
+				debugger;
+			}
+
+			this.setState(blameLine.line.line - 1, { commit: blameLine.commit });
 		} else {
 			const blame = await this.container.git.getBlame(trackedDocument.uri, editor.document);
 			if (blame == null) {
-				if (scope != null) {
-					scope.exitDetails = ` ${GlyphChars.Dot} blame failed`;
-				}
+				setLogScopeExit(scope, ` ${GlyphChars.Dot} blame failed`);
 
 				return false;
 			}
 
 			for (const selection of selections) {
 				const commitLine = blame.lines[selection.active];
-				this.setState(selection.active, new GitLineState(blame.commits.get(commitLine.sha)));
+				const commit = blame.commits.get(commitLine.sha);
+				if (commit != null && commit.file == null) {
+					debugger;
+				}
+
+				if (commit == null) {
+					debugger;
+					this.resetState(selection.active);
+				} else {
+					this.setState(selection.active, { commit: commit });
+				}
 			}
 		}
 
 		// Check again because of the awaits above
 
 		if (!this.includes(selections)) {
-			if (scope != null) {
-				scope.exitDetails = ` ${GlyphChars.Dot} lines no longer match`;
-			}
+			setLogScopeExit(scope, ` ${GlyphChars.Dot} lines no longer match`);
 
 			return false;
 		}
 
 		if (!trackedDocument.isBlameable) {
-			if (scope != null) {
-				scope.exitDetails = ` ${GlyphChars.Dot} document is not blameable`;
-			}
+			setLogScopeExit(scope, ` ${GlyphChars.Dot} document is not blameable`);
 
 			return false;
 		}

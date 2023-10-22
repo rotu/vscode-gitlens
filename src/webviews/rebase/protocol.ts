@@ -1,6 +1,8 @@
+import type { CustomEditorIds } from '../../constants';
+import type { WebviewState } from '../protocol';
 import { IpcCommandType, IpcNotificationType } from '../protocol';
 
-export interface State {
+export interface State extends WebviewState<CustomEditorIds> {
 	branch: string;
 	onto: { sha: string; commit?: Commit } | undefined;
 

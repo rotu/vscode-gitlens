@@ -19,40 +19,45 @@ import { LoadMoreNode, MessageNode } from './common';
 import { FileRevisionAsCommitNode } from './fileRevisionAsCommitNode';
 import { insertDateMarkers } from './helpers';
 import { LineHistoryTrackerNode } from './lineHistoryTrackerNode';
-import { RepositoryNode } from './repositoryNode';
 import type { PageableViewNode, ViewNode } from './viewNode';
-import { ContextValues, SubscribeableViewNode } from './viewNode';
+import { ContextValues, getViewNodeId, SubscribeableViewNode } from './viewNode';
 
 export class LineHistoryNode
-	extends SubscribeableViewNode<FileHistoryView | LineHistoryView>
+	extends SubscribeableViewNode<'line-history', FileHistoryView | LineHistoryView>
 	implements PageableViewNode
 {
-	static key = ':history:line';
-	static getId(repoPath: string, uri: string, selection: Selection): string {
-		return `${RepositoryNode.getId(repoPath)}${this.key}(${uri}[${selection.start.line},${
-			selection.start.character
-		}-${selection.end.line},${selection.end.character}])`;
-	}
+	limit: number | undefined;
 
 	protected override splatted = true;
 
 	constructor(
 		uri: GitUri,
 		view: FileHistoryView | LineHistoryView,
-		parent: ViewNode,
+		protected override readonly parent: ViewNode,
 		private readonly branch: GitBranch | undefined,
 		public readonly selection: Selection,
 		private readonly editorContents: string | undefined,
 	) {
-		super(uri, view, parent);
+		super('line-history', uri, view, parent);
+
+		if (branch != null) {
+			this.updateContext({ branch: branch });
+		}
+		this._uniqueId = getViewNodeId(
+			`${this.type}+${uri.toString()}+[${selection.start.line},${selection.start.character}-${
+				selection.end.line
+			},${selection.end.character}]`,
+			this.context,
+		);
+		this.limit = this.view.getNodeLastKnownLimit(this);
+	}
+
+	override get id(): string {
+		return this._uniqueId;
 	}
 
 	override toClipboard(): string {
 		return this.uri.fileName;
-	}
-
-	override get id(): string {
-		return LineHistoryNode.getId(this.uri.repoPath!, this.uri.toString(true), this.selection);
 	}
 
 	async getChildren(): Promise<ViewNode[]> {
@@ -61,6 +66,7 @@ export class LineHistoryNode
 		}`;
 
 		const children: ViewNode[] = [];
+		if (this.uri.repoPath == null) return children;
 
 		let selection = this.selection;
 
@@ -76,7 +82,7 @@ export class LineHistoryNode
 				? this.view.container.git.getBranchesAndTagsTipsFn(this.uri.repoPath, this.branch.name)
 				: undefined,
 			range
-				? this.view.container.git.getLogRefsOnly(this.uri.repoPath!, {
+				? this.view.container.git.getLogRefsOnly(this.uri.repoPath, {
 						limit: 0,
 						ref: range,
 				  })
@@ -100,7 +106,7 @@ export class LineHistoryNode
 					selection.active.character,
 				);
 
-				const status = await this.view.container.git.getStatusForFile(this.uri.repoPath!, this.uri);
+				const status = await this.view.container.git.getStatusForFile(this.uri.repoPath, this.uri);
 
 				if (status != null) {
 					const file: GitFile = {
@@ -108,18 +114,16 @@ export class LineHistoryNode
 						path: commit.file?.path ?? '',
 						indexStatus: status?.indexStatus,
 						originalPath: commit.file?.originalPath,
-						repoPath: this.uri.repoPath!,
+						repoPath: this.uri.repoPath,
 						status: status?.status ?? GitFileIndexStatus.Modified,
 						workingTreeStatus: status?.workingTreeStatus,
 					};
 
-					const currentUser = await this.view.container.git.getCurrentUser(this.uri.repoPath!);
+					const currentUser = await this.view.container.git.getCurrentUser(this.uri.repoPath);
 					const pseudoCommits = status?.getPseudoCommits(this.view.container, currentUser);
 					if (pseudoCommits != null) {
 						for (const commit of pseudoCommits.reverse()) {
-							children.splice(
-								0,
-								0,
+							children.unshift(
 								new FileRevisionAsCommitNode(this.view, this, file, commit, {
 									selection: selection,
 								}),
@@ -262,7 +266,6 @@ export class LineHistoryNode
 		return this._log?.hasMore ?? true;
 	}
 
-	limit: number | undefined = this.view.getNodeLastKnownLimit(this);
 	@gate()
 	async loadMore(limit?: number | { until?: any }) {
 		let log = await window.withProgress(

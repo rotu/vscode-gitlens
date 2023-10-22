@@ -1,10 +1,8 @@
 import type { Disposable, QuickPick } from 'vscode';
 import { CancellationTokenSource, window } from 'vscode';
-import {
-	getBranchesAndOrTags,
-	getValidateGitReferenceFn,
-	RevealInSideBarQuickInputButton,
-} from '../commands/quickCommand';
+import { RevealInSideBarQuickInputButton } from '../commands/quickCommand.buttons';
+import { getBranchesAndOrTags, getValidateGitReferenceFn } from '../commands/quickCommand.steps';
+import type { Keys } from '../constants';
 import { GlyphChars } from '../constants';
 import { Container } from '../container';
 import { reveal as revealBranch } from '../git/actions/branch';
@@ -14,7 +12,7 @@ import type { BranchSortOptions, GitBranch } from '../git/models/branch';
 import type { GitReference } from '../git/models/reference';
 import { isBranchReference, isRevisionReference, isTagReference } from '../git/models/reference';
 import type { GitTag, TagSortOptions } from '../git/models/tag';
-import type { KeyboardScope, Keys } from '../system/keyboard';
+import type { KeyboardScope } from '../system/keyboard';
 import { getQuickPickIgnoreFocusOut } from '../system/utils';
 import type { BranchQuickPickItem, RefQuickPickItem, TagQuickPickItem } from './items/gitCommands';
 import { createRefQuickPickItem } from './items/gitCommands';
@@ -191,16 +189,16 @@ async function getItems(
 	if (picked) {
 		const index = items.findIndex(i => i.ref === picked);
 		if (index !== -1) {
-			items.splice(0, 0, ...items.splice(index, 1));
+			items.unshift(...items.splice(index, 1));
 		}
 	}
 
 	if (include & ReferencesQuickPickIncludes.HEAD) {
-		items.splice(0, 0, createRefQuickPickItem('HEAD', repoPath, undefined, { icon: true }));
+		items.unshift(createRefQuickPickItem('HEAD', repoPath, undefined, { icon: true }));
 	}
 
 	if (include & ReferencesQuickPickIncludes.WorkingTree) {
-		items.splice(0, 0, createRefQuickPickItem('', repoPath, undefined, { icon: true }));
+		items.unshift(createRefQuickPickItem('', repoPath, undefined, { icon: true }));
 	}
 
 	return items;

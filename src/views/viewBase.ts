@@ -2,12 +2,14 @@ import type {
 	CancellationToken,
 	ConfigurationChangeEvent,
 	Event,
+	TreeCheckboxChangeEvent,
 	TreeDataProvider,
 	TreeItem,
 	TreeView,
 	TreeViewExpansionEvent,
 	TreeViewSelectionChangeEvent,
 	TreeViewVisibilityChangeEvent,
+	ViewBadge,
 } from 'vscode';
 import { Disposable, EventEmitter, MarkdownString, TreeItemCollapsibleState, window } from 'vscode';
 import type {
@@ -26,8 +28,9 @@ import type {
 	WorktreesViewConfig,
 } from '../config';
 import { viewsCommonConfigKeys, viewsConfigKeys } from '../config';
+import type { TreeViewCommandSuffixesByViewType, TreeViewTypes } from '../constants';
 import type { Container } from '../container';
-import { executeCommand } from '../system/command';
+import { executeCoreCommand } from '../system/command';
 import { configuration } from '../system/configuration';
 import { debug, log } from '../system/decorators/log';
 import { once } from '../system/event';
@@ -48,6 +51,7 @@ import type { RepositoriesView } from './repositoriesView';
 import type { SearchAndCompareView } from './searchAndCompareView';
 import type { StashesView } from './stashesView';
 import type { TagsView } from './tagsView';
+import type { WorkspacesView } from './workspacesView';
 import type { WorktreesView } from './worktreesView';
 
 export type View =
@@ -61,30 +65,59 @@ export type View =
 	| SearchAndCompareView
 	| StashesView
 	| TagsView
+	| WorkspacesView
 	| WorktreesView;
-export type ViewsWithCommits = Exclude<View, FileHistoryView | LineHistoryView | StashesView>;
-export type ViewsWithRepositoryFolders = Exclude<View, RepositoriesView | FileHistoryView | LineHistoryView>;
+
+export type ViewsWithBranches = BranchesView | CommitsView | RemotesView | RepositoriesView | WorkspacesView;
+export type ViewsWithBranchesNode = BranchesView | RepositoriesView | WorkspacesView;
+export type ViewsWithCommits = Exclude<View, LineHistoryView | StashesView>;
+export type ViewsWithContributors = ContributorsView | RepositoriesView | WorkspacesView;
+export type ViewsWithContributorsNode = ContributorsView | RepositoriesView | WorkspacesView;
+export type ViewsWithRemotes = RemotesView | RepositoriesView | WorkspacesView;
+export type ViewsWithRemotesNode = RemotesView | RepositoriesView | WorkspacesView;
+export type ViewsWithRepositories = RepositoriesView | WorkspacesView;
+export type ViewsWithRepositoriesNode = RepositoriesView | WorkspacesView;
+export type ViewsWithRepositoryFolders = Exclude<
+	View,
+	FileHistoryView | LineHistoryView | RepositoriesView | WorkspacesView
+>;
+export type ViewsWithStashes = StashesView | ViewsWithCommits;
+export type ViewsWithStashesNode = RepositoriesView | StashesView | WorkspacesView;
+export type ViewsWithTags = RepositoriesView | TagsView | WorkspacesView;
+export type ViewsWithTagsNode = RepositoriesView | TagsView | WorkspacesView;
+export type ViewsWithWorkingTree = RepositoriesView | WorktreesView | WorkspacesView;
+export type ViewsWithWorktrees = RepositoriesView | WorktreesView | WorkspacesView;
+export type ViewsWithWorktreesNode = RepositoriesView | WorktreesView | WorkspacesView;
 
 export interface TreeViewNodeCollapsibleStateChangeEvent<T> extends TreeViewExpansionEvent<T> {
 	state: TreeItemCollapsibleState;
 }
 
 export abstract class ViewBase<
-	RootNode extends ViewNode<View>,
-	ViewConfig extends
-		| BranchesViewConfig
-		| ContributorsViewConfig
-		| FileHistoryViewConfig
-		| CommitsViewConfig
-		| LineHistoryViewConfig
-		| RemotesViewConfig
-		| RepositoriesViewConfig
-		| SearchAndCompareViewConfig
-		| StashesViewConfig
-		| TagsViewConfig
-		| WorktreesViewConfig,
-> implements TreeDataProvider<ViewNode>, Disposable
+		Type extends TreeViewTypes,
+		RootNode extends ViewNode,
+		ViewConfig extends
+			| BranchesViewConfig
+			| ContributorsViewConfig
+			| FileHistoryViewConfig
+			| CommitsViewConfig
+			| LineHistoryViewConfig
+			| RemotesViewConfig
+			| RepositoriesViewConfig
+			| SearchAndCompareViewConfig
+			| StashesViewConfig
+			| TagsViewConfig
+			| WorktreesViewConfig,
+	>
+	implements TreeDataProvider<ViewNode>, Disposable
 {
+	get id(): `gitlens.views.${Type}` {
+		return `gitlens.views.${this.type}`;
+	}
+
+	protected _onDidInitialize = new EventEmitter<void>();
+	private initialized = false;
+
 	protected _onDidChangeTreeData = new EventEmitter<ViewNode | undefined>();
 	get onDidChangeTreeData(): Event<ViewNode | undefined> {
 		return this._onDidChangeTreeData.event;
@@ -105,6 +138,11 @@ export abstract class ViewBase<
 		return this._onDidChangeNodeCollapsibleState.event;
 	}
 
+	private _onDidChangeNodesCheckedState = new EventEmitter<TreeCheckboxChangeEvent<ViewNode>>();
+	get onDidChangeNodesCheckedState(): Event<TreeCheckboxChangeEvent<ViewNode>> {
+		return this._onDidChangeNodesCheckedState.event;
+	}
+
 	protected disposables: Disposable[] = [];
 	protected root: RootNode | undefined;
 	protected tree: TreeView<ViewNode> | undefined;
@@ -113,7 +151,7 @@ export abstract class ViewBase<
 
 	constructor(
 		public readonly container: Container,
-		public readonly id: `gitlens.views.${ViewsConfigKeys}`,
+		public readonly type: Type,
 		public readonly name: string,
 		private readonly trackingFeature: TrackedUsageFeatures,
 	) {
@@ -141,7 +179,7 @@ export abstract class ViewBase<
 			}
 
 			const getTreeItemFn = this.getTreeItem;
-			this.getTreeItem = async function (this: ViewBase<RootNode, ViewConfig>, node: ViewNode) {
+			this.getTreeItem = async function (this: ViewBase<Type, RootNode, ViewConfig>, node: ViewNode) {
 				const item = await getTreeItemFn.apply(this, [node]);
 
 				if (node.resolveTreeItem == null) {
@@ -153,7 +191,7 @@ export abstract class ViewBase<
 
 			const resolveTreeItemFn = this.resolveTreeItem;
 			this.resolveTreeItem = async function (
-				this: ViewBase<RootNode, ViewConfig>,
+				this: ViewBase<Type, RootNode, ViewConfig>,
 				item: TreeItem,
 				node: ViewNode,
 			) {
@@ -213,6 +251,16 @@ export abstract class ViewBase<
 
 		return false;
 	}
+
+	get badge(): ViewBadge | undefined {
+		return this.tree?.badge;
+	}
+	set badge(value: ViewBadge | undefined) {
+		if (this.tree != null) {
+			this.tree.badge = value;
+		}
+	}
+
 	private _title: string | undefined;
 	get title(): string | undefined {
 		return this._title;
@@ -246,8 +294,8 @@ export abstract class ViewBase<
 		}
 	}
 
-	getQualifiedCommand(command: string) {
-		return `${this.id}.${command}`;
+	getQualifiedCommand(command: TreeViewCommandSuffixesByViewType<Type>) {
+		return `gitlens.views.${this.type}.${command}` as const;
 	}
 
 	protected abstract getRoot(): RootNode;
@@ -259,7 +307,7 @@ export abstract class ViewBase<
 	}
 
 	protected initialize(options: { canSelectMany?: boolean; showCollapseAll?: boolean } = {}) {
-		this.tree = window.createTreeView<ViewNode<View>>(this.id, {
+		this.tree = window.createTreeView<ViewNode>(this.id, {
 			...options,
 			treeDataProvider: this,
 		});
@@ -273,10 +321,22 @@ export abstract class ViewBase<
 			this.tree,
 			this.tree.onDidChangeSelection(debounce(this.onSelectionChanged, 250), this),
 			this.tree.onDidChangeVisibility(debounce(this.onVisibilityChanged, 250), this),
+			this.tree.onDidChangeCheckboxState(this.onCheckboxStateChanged, this),
 			this.tree.onDidCollapseElement(this.onElementCollapsed, this),
 			this.tree.onDidExpandElement(this.onElementExpanded, this),
 		);
-		this._title = this.tree.title;
+
+		if (this._title != null) {
+			this.tree.title = this._title;
+		} else {
+			this._title = this.tree.title;
+		}
+		if (this._description != null) {
+			this.tree.description = this._description;
+		}
+		if (this._message != null) {
+			this.tree.message = this._message;
+		}
 	}
 
 	protected ensureRoot(force: boolean = false) {
@@ -291,7 +351,22 @@ export abstract class ViewBase<
 		if (node != null) return node.getChildren();
 
 		const root = this.ensureRoot();
-		return root.getChildren();
+		const children = root.getChildren();
+		if (!this.initialized) {
+			if (isPromise(children)) {
+				void children.then(() => {
+					if (!this.initialized) {
+						this.initialized = true;
+						setTimeout(() => this._onDidInitialize.fire(), 1);
+					}
+				});
+			} else {
+				this.initialized = true;
+				setTimeout(() => this._onDidInitialize.fire(), 1);
+			}
+		}
+
+		return children;
 	}
 
 	getParent(node: ViewNode): ViewNode | undefined {
@@ -314,8 +389,24 @@ export abstract class ViewBase<
 		this._onDidChangeNodeCollapsibleState.fire({ ...e, state: TreeItemCollapsibleState.Expanded });
 	}
 
+	protected onCheckboxStateChanged(e: TreeCheckboxChangeEvent<ViewNode>) {
+		try {
+			for (const [node, state] of e.items) {
+				if (node.id == null) {
+					debugger;
+					throw new Error('Id is required for checkboxes');
+				}
+
+				node.storeState('checked', state, true);
+			}
+		} finally {
+			this._onDidChangeNodesCheckedState.fire(e);
+		}
+	}
+
 	protected onSelectionChanged(e: TreeViewSelectionChangeEvent<ViewNode>) {
 		this._onDidChangeSelection.fire(e);
+		this.notifySelections();
 	}
 
 	protected onVisibilityChanged(e: TreeViewVisibilityChangeEvent) {
@@ -324,6 +415,45 @@ export abstract class ViewBase<
 		}
 
 		this._onDidChangeVisibility.fire(e);
+		if (e.visible) {
+			this.notifySelections();
+		}
+	}
+
+	private notifySelections() {
+		const node = this.selection?.[0];
+		if (node == null) return;
+
+		if (
+			node.is('commit') ||
+			node.is('stash') ||
+			node.is('file-commit') ||
+			node.is('commit-file') ||
+			node.is('stash-file')
+		) {
+			this.container.events.fire(
+				'commit:selected',
+				{
+					commit: node.commit,
+					interaction: 'passive',
+					preserveFocus: true,
+					preserveVisibility: true,
+				},
+				{ source: this.id },
+			);
+		}
+
+		if (node.is('file-commit') || node.is('commit-file') || node.is('stash-file')) {
+			this.container.events.fire(
+				'file:selected',
+				{
+					uri: node.uri,
+					preserveFocus: true,
+					preserveVisibility: true,
+				},
+				{ source: this.id },
+			);
+		}
 	}
 
 	get activeSelection(): ViewNode | undefined {
@@ -343,32 +473,14 @@ export abstract class ViewBase<
 		return this.tree?.visible ?? false;
 	}
 
-	async findNode(
-		id: string,
-		options?: {
-			allowPaging?: boolean;
-			canTraverse?: (node: ViewNode) => boolean | Promise<boolean>;
-			maxDepth?: number;
-			token?: CancellationToken;
-		},
-	): Promise<ViewNode | undefined>;
-	async findNode(
-		predicate: (node: ViewNode) => boolean,
-		options?: {
-			allowPaging?: boolean;
-			canTraverse?: (node: ViewNode) => boolean | Promise<boolean>;
-			maxDepth?: number;
-			token?: CancellationToken;
-		},
-	): Promise<ViewNode | undefined>;
-	@log<ViewBase<RootNode, ViewConfig>['findNode']>({
+	@log<ViewBase<Type, RootNode, ViewConfig>['findNode']>({
 		args: {
-			0: predicate => (typeof predicate === 'string' ? predicate : '<function>'),
+			0: '<function>',
 			1: opts => `options=${JSON.stringify({ ...opts, canTraverse: undefined, token: undefined })}`,
 		},
 	})
 	async findNode(
-		predicate: string | ((node: ViewNode) => boolean),
+		predicate: (node: ViewNode) => boolean,
 		{
 			allowPaging = false,
 			canTraverse,
@@ -383,10 +495,10 @@ export abstract class ViewBase<
 	): Promise<ViewNode | undefined> {
 		const scope = getLogScope();
 
-		async function find(this: ViewBase<RootNode, ViewConfig>) {
+		async function find(this: ViewBase<Type, RootNode, ViewConfig>) {
 			try {
 				const node = await this.findNodeCoreBFS(
-					typeof predicate === 'string' ? n => n.id === predicate : predicate,
+					predicate,
 					this.ensureRoot(),
 					allowPaging,
 					canTraverse,
@@ -401,12 +513,14 @@ export abstract class ViewBase<
 			}
 		}
 
-		if (this.root != null) return find.call(this);
+		if (this.initialized) return find.call(this);
 
 		// If we have no root (e.g. never been initialized) force it so the tree will load properly
-		await this.show({ preserveFocus: true });
+		void this.show({ preserveFocus: true });
 		// Since we have to show the view, give the view time to load and let the callstack unwind before we try to find the node
-		return new Promise<ViewNode | undefined>(resolve => setTimeout(() => resolve(find.call(this)), 100));
+		return new Promise<ViewNode | undefined>(resolve =>
+			once(this._onDidInitialize.event)(() => resolve(find.call(this)), this),
+		);
 	}
 
 	private async findNodeCoreBFS(
@@ -526,7 +640,7 @@ export abstract class ViewBase<
 		this.triggerNodeChange();
 	}
 
-	@debug<ViewBase<RootNode, ViewConfig>['refreshNode']>({ args: { 0: n => n.toString() } })
+	@debug<ViewBase<Type, RootNode, ViewConfig>['refreshNode']>({ args: { 0: n => n.toString() } })
 	async refreshNode(node: ViewNode, reset: boolean = false, force: boolean = false) {
 		const cancel = await node.refresh?.(reset);
 		if (!force && cancel === true) return;
@@ -534,7 +648,7 @@ export abstract class ViewBase<
 		this.triggerNodeChange(node);
 	}
 
-	@log<ViewBase<RootNode, ViewConfig>['reveal']>({ args: { 0: n => n.toString() } })
+	@log<ViewBase<Type, RootNode, ViewConfig>['reveal']>({ args: { 0: n => n.toString() } })
 	async reveal(
 		node: ViewNode,
 		options?: {
@@ -557,7 +671,7 @@ export abstract class ViewBase<
 		const scope = getLogScope();
 
 		try {
-			void (await executeCommand(`${this.id}.focus`, options));
+			void (await executeCoreCommand(`${this.id}.focus`, options));
 		} catch (ex) {
 			Logger.error(ex, scope);
 		}
@@ -568,7 +682,7 @@ export abstract class ViewBase<
 		return this._lastKnownLimits.get(node.id);
 	}
 
-	@debug<ViewBase<RootNode, ViewConfig>['loadMoreNodeChildren']>({
+	@debug<ViewBase<Type, RootNode, ViewConfig>['loadMoreNodeChildren']>({
 		args: { 0: n => n.toString(), 2: n => n?.toString() },
 	})
 	async loadMoreNodeChildren(
@@ -585,7 +699,7 @@ export abstract class ViewBase<
 		this._lastKnownLimits.set(node.id, node.limit);
 	}
 
-	@debug<ViewBase<RootNode, ViewConfig>['resetNodeLastKnownLimit']>({
+	@debug<ViewBase<Type, RootNode, ViewConfig>['resetNodeLastKnownLimit']>({
 		args: { 0: n => n.toString() },
 		singleLine: true,
 	})
@@ -593,7 +707,7 @@ export abstract class ViewBase<
 		this._lastKnownLimits.delete(node.id);
 	}
 
-	@debug<ViewBase<RootNode, ViewConfig>['triggerNodeChange']>({ args: { 0: n => n?.toString() } })
+	@debug<ViewBase<Type, RootNode, ViewConfig>['triggerNodeChange']>({ args: { 0: n => n?.toString() } })
 	triggerNodeChange(node?: ViewNode) {
 		// Since the root node won't actually refresh, force everything
 		this._onDidChangeTreeData.fire(node != null && node !== this.root ? node : undefined);
@@ -606,6 +720,7 @@ export abstract class ViewBase<
 		if (this._config == null) {
 			const cfg = { ...configuration.get('views') };
 			for (const view of viewsConfigKeys) {
+				// eslint-disable-next-line @typescript-eslint/no-dynamic-delete
 				delete cfg[view];
 			}
 
@@ -620,39 +735,82 @@ export abstract class ViewBase<
 }
 
 export class ViewNodeState implements Disposable {
-	private _state: Map<string, Map<string, unknown>> | undefined;
+	private _store: Map<string, Map<string, unknown>> | undefined;
+	private _stickyStore: Map<string, Map<string, unknown>> | undefined;
 
 	dispose() {
 		this.reset();
+
+		this._stickyStore?.clear();
+		this._stickyStore = undefined;
 	}
 
 	reset() {
-		this._state?.clear();
-		this._state = undefined;
+		this._store?.clear();
+		this._store = undefined;
+	}
+
+	delete(prefix: string, key: string): void {
+		for (const store of [this._store, this._stickyStore]) {
+			if (store == null) continue;
+
+			for (const [id, map] of store) {
+				if (id.startsWith(prefix)) {
+					map.delete(key);
+				}
+			}
+		}
 	}
 
 	deleteState(id: string, key?: string): void {
 		if (key == null) {
-			this._state?.delete(id);
+			this._store?.delete(id);
+			this._stickyStore?.delete(id);
 		} else {
-			this._state?.get(id)?.delete(key);
+			this._store?.get(id)?.delete(key);
+			this._stickyStore?.get(id)?.delete(key);
 		}
+	}
+
+	get<T>(prefix: string, key: string): Map<string, T> {
+		const maps = new Map<string, T>();
+
+		for (const store of [this._store, this._stickyStore]) {
+			if (store == null) continue;
+
+			for (const [id, map] of store) {
+				if (id.startsWith(prefix) && map.has(key)) {
+					maps.set(id, map.get(key) as T);
+				}
+			}
+		}
+
+		return maps;
 	}
 
 	getState<T>(id: string, key: string): T | undefined {
-		return this._state?.get(id)?.get(key) as T | undefined;
+		return (this._stickyStore?.get(id)?.get(key) ?? this._store?.get(id)?.get(key)) as T | undefined;
 	}
 
-	storeState<T>(id: string, key: string, value: T): void {
-		if (this._state == null) {
-			this._state = new Map();
+	storeState<T>(id: string, key: string, value: T, sticky?: boolean): void {
+		let store;
+		if (sticky) {
+			if (this._stickyStore == null) {
+				this._stickyStore = new Map();
+			}
+			store = this._stickyStore;
+		} else {
+			if (this._store == null) {
+				this._store = new Map();
+			}
+			store = this._store;
 		}
 
-		const state = this._state.get(id);
+		const state = store.get(id);
 		if (state != null) {
 			state.set(key, value);
 		} else {
-			this._state.set(id, new Map([[key, value]]));
+			store.set(id, new Map([[key, value]]));
 		}
 	}
 }

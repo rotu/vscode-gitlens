@@ -2,7 +2,6 @@ import type { AuthenticationSession, Disposable, QuickInputButton, Range } from 
 import { env, ThemeIcon, Uri, window } from 'vscode';
 import type { Autolink, DynamicAutolinkReference } from '../../annotations/autolinks';
 import type { AutolinkReference } from '../../config';
-import { AutolinkType } from '../../config';
 import type { Container } from '../../container';
 import type {
 	IntegrationAuthenticationProvider,
@@ -11,12 +10,14 @@ import type {
 import { log } from '../../system/decorators/log';
 import { encodeUrl } from '../../system/encoding';
 import { equalsIgnoreCase } from '../../system/string';
+import { supportedInVSCodeVersion } from '../../system/utils';
 import type { Account } from '../models/author';
 import type { DefaultBranch } from '../models/defaultBranch';
 import type { IssueOrPullRequest, SearchedIssue } from '../models/issue';
 import type { PullRequest, PullRequestState, SearchedPullRequest } from '../models/pullRequest';
 import { isSha } from '../models/reference';
 import type { Repository } from '../models/repository';
+import type { RepositoryMetadata } from '../models/repositoryMetadata';
 import { ensurePaidPlan, RichRemoteProvider } from './richRemoteProvider';
 
 const autolinkFullIssuesRegex = /\b(?<repo>[^/\s]+\/[^/\s]+)#(?<num>[0-9]+)\b(?!]\()/g;
@@ -55,7 +56,7 @@ export class GitLabRemote extends RichRemoteProvider {
 					url: `${this.baseUrl}/-/issues/<num>`,
 					title: `Open Issue #<num> on ${this.name}`,
 
-					type: AutolinkType.Issue,
+					type: 'issue',
 					description: `${this.name} Issue #<num>`,
 				},
 				{
@@ -63,7 +64,7 @@ export class GitLabRemote extends RichRemoteProvider {
 					url: `${this.baseUrl}/-/merge_requests/<num>`,
 					title: `Open Merge Request !<num> on ${this.name}`,
 
-					type: AutolinkType.PullRequest,
+					type: 'pullrequest',
 					description: `${this.name} Merge Request !<num>`,
 				},
 				{
@@ -106,7 +107,7 @@ export class GitLabRemote extends RichRemoteProvider {
 								url: `${this.protocol}://${this.domain}/${repo}/-/issues/${num}`,
 								title: `Open Issue #<num> from ${repo} on ${this.name}`,
 
-								type: AutolinkType.Issue,
+								type: 'issue',
 								description: `${this.name} Issue ${repo}#${num}`,
 							});
 						} while (true);
@@ -157,7 +158,7 @@ export class GitLabRemote extends RichRemoteProvider {
 								url: `${this.protocol}://${this.domain}/${repo}/-/merge_requests/${num}`,
 								title: `Open Merge Request !<num> from ${repo} on ${this.name}`,
 
-								type: AutolinkType.PullRequest,
+								type: 'pullrequest',
 								description: `Merge Request !${num} from ${repo} on ${this.name}`,
 							});
 						} while (true);
@@ -289,7 +290,7 @@ export class GitLabRemote extends RichRemoteProvider {
 		return `${this.encodeUrl(`${this.baseUrl}?path=${fileName}`)}${line}`;
 	}
 
-	protected async getProviderAccountForCommit(
+	protected override async getProviderAccountForCommit(
 		{ accessToken }: AuthenticationSession,
 		ref: string,
 		options?: {
@@ -303,7 +304,7 @@ export class GitLabRemote extends RichRemoteProvider {
 		});
 	}
 
-	protected async getProviderAccountForEmail(
+	protected override async getProviderAccountForEmail(
 		{ accessToken }: AuthenticationSession,
 		email: string,
 		options?: {
@@ -317,7 +318,7 @@ export class GitLabRemote extends RichRemoteProvider {
 		});
 	}
 
-	protected async getProviderDefaultBranch({
+	protected override async getProviderDefaultBranch({
 		accessToken,
 	}: AuthenticationSession): Promise<DefaultBranch | undefined> {
 		const [owner, repo] = this.splitPath();
@@ -326,7 +327,7 @@ export class GitLabRemote extends RichRemoteProvider {
 		});
 	}
 
-	protected async getProviderIssueOrPullRequest(
+	protected override async getProviderIssueOrPullRequest(
 		{ accessToken }: AuthenticationSession,
 		id: string,
 	): Promise<IssueOrPullRequest | undefined> {
@@ -336,7 +337,7 @@ export class GitLabRemote extends RichRemoteProvider {
 		});
 	}
 
-	protected async getProviderPullRequestForBranch(
+	protected override async getProviderPullRequestForBranch(
 		{ accessToken }: AuthenticationSession,
 		branch: string,
 		options?: {
@@ -356,7 +357,7 @@ export class GitLabRemote extends RichRemoteProvider {
 		});
 	}
 
-	protected async getProviderPullRequestForCommit(
+	protected override async getProviderPullRequestForCommit(
 		{ accessToken }: AuthenticationSession,
 		ref: string,
 	): Promise<PullRequest | undefined> {
@@ -366,13 +367,24 @@ export class GitLabRemote extends RichRemoteProvider {
 		});
 	}
 
-	protected async searchProviderMyPullRequests(
+	protected override async getProviderRepositoryMetadata({
+		accessToken,
+	}: AuthenticationSession): Promise<RepositoryMetadata | undefined> {
+		const [owner, repo] = this.splitPath();
+		return (await this.container.gitlab)?.getRepositoryMetadata(this, accessToken, owner, repo, {
+			baseUrl: this.apiBaseUrl,
+		});
+	}
+
+	protected override async searchProviderMyPullRequests(
 		_session: AuthenticationSession,
 	): Promise<SearchedPullRequest[] | undefined> {
 		return Promise.resolve(undefined);
 	}
 
-	protected async searchProviderMyIssues(_session: AuthenticationSession): Promise<SearchedIssue[] | undefined> {
+	protected override async searchProviderMyIssues(
+		_session: AuthenticationSession,
+	): Promise<SearchedIssue[] | undefined> {
 		return Promise.resolve(undefined);
 	}
 }
@@ -404,7 +416,7 @@ export class GitLabAuthenticationProvider implements Disposable, IntegrationAuth
 		try {
 			const infoButton: QuickInputButton = {
 				iconPath: new ThemeIcon(`link-external`),
-				tooltip: 'Open Access Tokens page on GitLab',
+				tooltip: 'Open the GitLab Access Tokens Page',
 			};
 
 			token = await new Promise<string | undefined>(resolve => {
@@ -434,7 +446,11 @@ export class GitLabAuthenticationProvider implements Disposable, IntegrationAuth
 				input.password = true;
 				input.title = `GitLab Authentication${descriptor?.domain ? `  \u2022 ${descriptor.domain}` : ''}`;
 				input.placeholder = `Requires ${descriptor?.scopes.join(', ') ?? 'all'} scopes`;
-				input.prompt = 'Paste your GitLab Personal Access Token';
+				input.prompt = input.prompt = supportedInVSCodeVersion('input-prompt-links')
+					? `Paste your [GitLab Personal Access Token](https://${
+							descriptor?.domain ?? 'gitlab.com'
+					  }/-/profile/personal_access_tokens "Get your GitLab Access Token")`
+					: 'Paste your GitLab Personal Access Token';
 				input.buttons = [infoButton];
 
 				input.show();

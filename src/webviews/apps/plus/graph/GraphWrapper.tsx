@@ -1,8 +1,8 @@
 import type {
+	GraphColumnMode,
 	GraphColumnSetting,
 	GraphColumnsSettings,
 	GraphContainerProps,
-	GraphMarkerType,
 	GraphPlatform,
 	GraphRef,
 	GraphRefGroup,
@@ -11,24 +11,23 @@ import type {
 	GraphZoneType,
 	OnFormatCommitDateTime,
 } from '@gitkraken/gitkraken-components';
-import GraphContainer, { CommitDateTimeSources, commitZone, refZone } from '@gitkraken/gitkraken-components';
+import GraphContainer, { CommitDateTimeSources, refZone } from '@gitkraken/gitkraken-components';
 import { VSCodeCheckbox, VSCodeRadio, VSCodeRadioGroup } from '@vscode/webview-ui-toolkit/react';
 import type { FormEvent, ReactElement } from 'react';
 import React, { createElement, useEffect, useMemo, useRef, useState } from 'react';
 import { getPlatform } from '@env/platform';
-import { DateStyle } from '../../../../config';
-import { RepositoryVisibility } from '../../../../git/gitProvider';
+import type { DateStyle } from '../../../../config';
 import type { SearchQuery } from '../../../../git/search';
 import type {
 	DidEnsureRowParams,
 	DidSearchParams,
-	DismissBannerParams,
 	GraphAvatars,
 	GraphColumnName,
 	GraphColumnsConfig,
 	GraphComponentConfig,
 	GraphExcludedRef,
 	GraphExcludeTypes,
+	GraphMinimapMarkerTypes,
 	GraphMissingRefsMetadata,
 	GraphRefMetadataItem,
 	GraphRepository,
@@ -46,21 +45,23 @@ import {
 	DidChangeRefsMetadataNotificationType,
 	DidChangeRefsVisibilityNotificationType,
 	DidChangeRowsNotificationType,
+	DidChangeRowsStatsNotificationType,
 	DidChangeSelectionNotificationType,
 	DidChangeSubscriptionNotificationType,
 	DidChangeWindowFocusNotificationType,
 	DidChangeWorkingTreeNotificationType,
 	DidFetchNotificationType,
 	DidSearchNotificationType,
-	GraphMinimapMarkerTypes,
 } from '../../../../plus/webviews/graph/protocol';
 import type { Subscription } from '../../../../subscription';
-import { getSubscriptionTimeRemaining, SubscriptionState } from '../../../../subscription';
 import { pluralize } from '../../../../system/string';
+import { createWebviewCommandLink } from '../../../../system/webview';
 import type { IpcNotificationType } from '../../../protocol';
 import { MenuDivider, MenuItem, MenuLabel, MenuList } from '../../shared/components/menu/react';
 import { PopMenu } from '../../shared/components/overlays/pop-menu/react';
 import { PopOver } from '../../shared/components/overlays/react';
+import { FeatureGate } from '../../shared/components/react/feature-gate';
+import { FeatureGateBadge } from '../../shared/components/react/feature-gate-badge';
 import { SearchBox } from '../../shared/components/search/react';
 import type { SearchNavigationEventDetail } from '../../shared/components/search/search-box';
 import type { DateTimeFormat } from '../../shared/date';
@@ -84,7 +85,7 @@ export interface GraphWrapperProps {
 	onDimMergeCommits?: (dim: boolean) => void;
 	onDoubleClickRef?: (ref: GraphRef, metadata?: GraphRefMetadataItem) => void;
 	onDoubleClickRow?: (row: GraphRow, preserveFocus?: boolean) => void;
-	onMissingAvatars?: (emails: { [email: string]: string }) => void;
+	onMissingAvatars?: (emails: Record<string, string>) => void;
 	onMissingRefsMetadata?: (metadata: GraphMissingRefsMetadata) => void;
 	onMoreRows?: (id?: string) => void;
 	onRefsVisibilityChange?: (refs: GraphExcludedRef[], visible: boolean) => void;
@@ -94,7 +95,6 @@ export interface GraphWrapperProps {
 		options?: { limit?: number; more?: boolean },
 	) => Promise<DidSearchParams | undefined>;
 	onSearchOpenInView?: (search: SearchQuery) => void;
-	onDismissBanner?: (key: DismissBannerParams['key']) => void;
 	onSelectionChange?: (rows: GraphRow[]) => void;
 	onEnsureRowPromise?: (id: string, select: boolean) => Promise<DidEnsureRowParams | undefined>;
 	onExcludeType?: (key: keyof GraphExcludeTypes, value: boolean) => void;
@@ -107,10 +107,17 @@ const getGraphDateFormatter = (config?: GraphComponentConfig): OnFormatCommitDat
 		formatCommitDateTime(commitDateTime, config?.dateStyle, config?.dateFormat, source);
 };
 
-const createIconElements = (): { [key: string]: ReactElement<any> } => {
+const createIconElements = (): Record<string, ReactElement> => {
 	const iconList = [
 		'head',
 		'remote',
+		'remote-github',
+		'remote-githubEnterprise',
+		'remote-gitlab',
+		'remote-gitlabSelfHosted',
+		'remote-bitbucket',
+		'remote-bitbucketServer',
+		'remote-azureDevops',
 		'tag',
 		'stash',
 		'check',
@@ -124,16 +131,29 @@ const createIconElements = (): { [key: string]: ReactElement<any> } => {
 		'pull-request',
 		'show',
 		'hide',
+		'branch',
+		'graph',
+		'commit',
+		'author',
+		'datetime',
+		'message',
+		'changes',
+		'files',
 	];
 
 	const miniIconList = ['upstream-ahead', 'upstream-behind'];
 
-	const elementLibrary: { [key: string]: ReactElement<any> } = {};
+	const elementLibrary: Record<string, ReactElement> = {};
 	iconList.forEach(iconKey => {
 		elementLibrary[iconKey] = createElement('span', { className: `graph-icon icon--${iconKey}` });
 	});
 	miniIconList.forEach(iconKey => {
 		elementLibrary[iconKey] = createElement('span', { className: `graph-icon mini-icon icon--${iconKey}` });
+	});
+	//TODO: fix this once the styling is properly configured component-side
+	elementLibrary.settings = createElement('span', {
+		className: 'graph-icon icon--settings',
+		style: { fontSize: '1.1rem', right: '0px', top: '-1px' },
 	});
 	return elementLibrary;
 };
@@ -177,7 +197,6 @@ export function GraphWrapper({
 	onSearchPromise,
 	onSearchOpenInView,
 	onSelectionChange,
-	onDismissBanner,
 	onExcludeType,
 	onIncludeOnlyRef,
 	onUpdateGraphConfiguration,
@@ -185,6 +204,8 @@ export function GraphWrapper({
 	const graphRef = useRef<GraphContainer>(null);
 
 	const [rows, setRows] = useState(state.rows ?? []);
+	const [rowsStats, setRowsStats] = useState(state.rowsStats);
+	const [rowsStatsLoading, setRowsStatsLoading] = useState(state.rowsStatsLoading);
 	const [avatars, setAvatars] = useState(state.avatars);
 	const [downstreams, setDownstreams] = useState(state.downstreams ?? {});
 	const [refsMetadata, setRefsMetadata] = useState(state.refsMetadata);
@@ -192,6 +213,7 @@ export function GraphWrapper({
 	const [repo, setRepo] = useState<GraphRepository | undefined>(
 		repos.find(item => item.path === state.selectedRepository),
 	);
+	const [branchState, setBranchState] = useState(state.branchState);
 	const [selectedRows, setSelectedRows] = useState(state.selectedRows);
 	const [activeRow, setActiveRow] = useState(state.activeRow);
 	const [activeDay, setActiveDay] = useState(state.activeDay);
@@ -209,12 +231,7 @@ export function GraphWrapper({
 	const [branchName, setBranchName] = useState(state.branchName);
 	const [lastFetched, setLastFetched] = useState(state.lastFetched);
 	const [windowFocused, setWindowFocused] = useState(state.windowFocused);
-	// account
-	const [showAccount, setShowAccount] = useState(state.trialBanner);
-	const [isAccessAllowed, setIsAccessAllowed] = useState(state.allowed ?? false);
-	const [isRepoPrivate, setIsRepoPrivate] = useState(
-		state.selectedRepositoryVisibility === RepositoryVisibility.Private,
-	);
+	const [allowed, setAllowed] = useState(state.allowed ?? false);
 	const [subscription, setSubscription] = useState<Subscription | undefined>(state.subscription);
 	// search state
 	const searchEl = useRef<any>(null);
@@ -265,12 +282,18 @@ export function GraphWrapper({
 				break;
 			case DidChangeRowsNotificationType:
 				setRows(state.rows ?? []);
+				setRowsStats(state.rowsStats);
+				setRowsStatsLoading(state.rowsStatsLoading);
 				setSelectedRows(state.selectedRows);
 				setAvatars(state.avatars);
 				setDownstreams(state.downstreams ?? {});
 				setRefsMetadata(state.refsMetadata);
 				setPagingHasMore(state.paging?.hasMore ?? false);
 				setIsLoading(state.loading);
+				break;
+			case DidChangeRowsStatsNotificationType:
+				setRowsStats(state.rowsStats);
+				setRowsStatsLoading(state.rowsStatsLoading);
 				break;
 			case DidSearchNotificationType: {
 				const { results, resultsError } = getSearchResultModel(state);
@@ -292,7 +315,7 @@ export function GraphWrapper({
 				setIncludeOnlyRefsById(state.includeOnlyRefs);
 				break;
 			case DidChangeSubscriptionNotificationType:
-				setIsAccessAllowed(state.allowed ?? false);
+				setAllowed(state.allowed ?? false);
 				setSubscription(state.subscription);
 				break;
 			case DidChangeWorkingTreeNotificationType:
@@ -302,7 +325,7 @@ export function GraphWrapper({
 				setLastFetched(state.lastFetched);
 				break;
 			default: {
-				setIsAccessAllowed(state.allowed ?? false);
+				setAllowed(state.allowed ?? false);
 				if (!themingChanged) {
 					setStyleProps(state.theming);
 				}
@@ -310,6 +333,8 @@ export function GraphWrapper({
 				setLastFetched(state.lastFetched);
 				setColumns(state.columns);
 				setRows(state.rows ?? []);
+				setRowsStats(state.rowsStats);
+				setRowsStatsLoading(state.rowsStatsLoading);
 				setWorkingTreeStats(state.workingTreeStats ?? { added: 0, modified: 0, deleted: 0 });
 				setGraphConfig(state.config);
 				setSelectedRows(state.selectedRows);
@@ -319,14 +344,13 @@ export function GraphWrapper({
 				setContext(state.context);
 				setAvatars(state.avatars ?? {});
 				setDownstreams(state.downstreams ?? {});
+				setBranchState(state.branchState);
 				setRefsMetadata(state.refsMetadata);
 				setPagingHasMore(state.paging?.hasMore ?? false);
 				setRepos(state.repositories ?? []);
 				setRepo(repos.find(item => item.path === state.selectedRepository));
-				setIsRepoPrivate(state.selectedRepositoryVisibility === RepositoryVisibility.Private);
 				// setGraphDateFormatter(getGraphDateFormatter(config));
 				setSubscription(state.subscription);
-				setShowAccount(state.trialBanner ?? true);
 
 				const { results, resultsError } = getSearchResultModel(state);
 				setSearchResultsError(resultsError);
@@ -367,10 +391,13 @@ export function GraphWrapper({
 	const minimapData = useMemo(() => {
 		if (!graphConfig?.minimap) return undefined;
 
+		const showLinesChanged = (graphConfig?.minimapDataType ?? 'commits') === 'lines';
+		if (showLinesChanged && rowsStats == null) return undefined;
+
 		// Loops through all the rows and group them by day and aggregate the row.stats
 		const statsByDayMap = new Map<number, GraphMinimapStats>();
 		const markersByDay = new Map<number, GraphMinimapMarker[]>();
-		const enabledMinimapMarkers: GraphMinimapMarkerTypes[] = graphConfig?.enabledMinimapMarkerTypes ?? [];
+		const enabledMinimapMarkers: GraphMinimapMarkerTypes[] = graphConfig?.minimapMarkerTypes ?? [];
 
 		let rankedShas: {
 			head: string | undefined;
@@ -399,7 +426,6 @@ export function GraphWrapper({
 		// Iterate in reverse order so that we can track the HEAD upstream properly
 		for (let i = rows.length - 1; i >= 0; i--) {
 			row = rows[i];
-			stats = row.stats;
 
 			day = getDay(row.date);
 			if (day !== prevDay) {
@@ -414,8 +440,7 @@ export function GraphWrapper({
 
 			if (
 				row.heads?.length &&
-				(enabledMinimapMarkers.includes(GraphMinimapMarkerTypes.Head) ||
-					enabledMinimapMarkers.includes(GraphMinimapMarkerTypes.LocalBranches))
+				(enabledMinimapMarkers.includes('head') || enabledMinimapMarkers.includes('localBranches'))
 			) {
 				rankedShas.branch = row.sha;
 
@@ -428,13 +453,13 @@ export function GraphWrapper({
 					}
 
 					if (
-						enabledMinimapMarkers.includes(GraphMinimapMarkerTypes.LocalBranches) ||
-						(enabledMinimapMarkers.includes(GraphMinimapMarkerTypes.Head) && h.isCurrentHead)
+						enabledMinimapMarkers.includes('localBranches') ||
+						(enabledMinimapMarkers.includes('head') && h.isCurrentHead)
 					) {
 						headMarkers.push({
 							type: 'branch',
 							name: h.name,
-							current: h.isCurrentHead && enabledMinimapMarkers.includes(GraphMinimapMarkerTypes.Head),
+							current: h.isCurrentHead && enabledMinimapMarkers.includes('head'),
 						});
 					}
 				});
@@ -449,9 +474,9 @@ export function GraphWrapper({
 
 			if (
 				row.remotes?.length &&
-				(enabledMinimapMarkers.includes(GraphMinimapMarkerTypes.Upstream) ||
-					enabledMinimapMarkers.includes(GraphMinimapMarkerTypes.RemoteBranches) ||
-					enabledMinimapMarkers.includes(GraphMinimapMarkerTypes.LocalBranches))
+				(enabledMinimapMarkers.includes('upstream') ||
+					enabledMinimapMarkers.includes('remoteBranches') ||
+					enabledMinimapMarkers.includes('localBranches'))
 			) {
 				rankedShas.remote = row.sha;
 
@@ -467,14 +492,14 @@ export function GraphWrapper({
 					}
 
 					if (
-						enabledMinimapMarkers.includes(GraphMinimapMarkerTypes.RemoteBranches) ||
-						(enabledMinimapMarkers.includes(GraphMinimapMarkerTypes.Upstream) && current) ||
-						(enabledMinimapMarkers.includes(GraphMinimapMarkerTypes.LocalBranches) && hasDownstream)
+						enabledMinimapMarkers.includes('remoteBranches') ||
+						(enabledMinimapMarkers.includes('upstream') && current) ||
+						(enabledMinimapMarkers.includes('localBranches') && hasDownstream)
 					) {
 						remoteMarkers.push({
 							type: 'remote',
 							name: `${r.owner}/${r.name}`,
-							current: current && enabledMinimapMarkers.includes(GraphMinimapMarkerTypes.Upstream),
+							current: current && enabledMinimapMarkers.includes('upstream'),
 						});
 					}
 				});
@@ -487,7 +512,7 @@ export function GraphWrapper({
 				}
 			}
 
-			if (row.type === 'stash-node' && enabledMinimapMarkers.includes(GraphMinimapMarkerTypes.Stashes)) {
+			if (row.type === 'stash-node' && enabledMinimapMarkers.includes('stashes')) {
 				stashMarker = { type: 'stash', name: row.message };
 				markers = markersByDay.get(day);
 				if (markers == null) {
@@ -497,7 +522,7 @@ export function GraphWrapper({
 				}
 			}
 
-			if (row.tags?.length && enabledMinimapMarkers.includes(GraphMinimapMarkerTypes.Tags)) {
+			if (row.tags?.length && enabledMinimapMarkers.includes('tags')) {
 				rankedShas.tag = row.sha;
 
 				tagMarkers = row.tags.map<GraphMinimapMarker>(t => ({
@@ -515,42 +540,54 @@ export function GraphWrapper({
 
 			stat = statsByDayMap.get(day);
 			if (stat == null) {
-				stat =
-					stats != null
-						? {
-								activity: { additions: stats.additions, deletions: stats.deletions },
-								commits: 1,
-								files: stats.files,
-								sha: row.sha,
-						  }
-						: {
-								commits: 1,
-								sha: row.sha,
-						  };
-				statsByDayMap.set(day, stat);
+				if (showLinesChanged) {
+					stats = rowsStats![row.sha];
+					if (stats != null) {
+						stat = {
+							activity: { additions: stats.additions, deletions: stats.deletions },
+							commits: 1,
+							files: stats.files,
+							sha: row.sha,
+						};
+						statsByDayMap.set(day, stat);
+					}
+				} else {
+					stat = {
+						commits: 1,
+						sha: row.sha,
+					};
+					statsByDayMap.set(day, stat);
+				}
 			} else {
 				stat.commits++;
 				stat.sha = rankedShas.head ?? rankedShas.branch ?? rankedShas.remote ?? rankedShas.tag ?? stat.sha;
-				if (stats != null) {
-					if (stat.activity == null) {
-						stat.activity = { additions: stats.additions, deletions: stats.deletions };
-					} else {
-						stat.activity.additions += stats.additions;
-						stat.activity.deletions += stats.deletions;
+				if (showLinesChanged) {
+					stats = rowsStats![row.sha];
+					if (stats != null) {
+						if (stat.activity == null) {
+							stat.activity = { additions: stats.additions, deletions: stats.deletions };
+						} else {
+							stat.activity.additions += stats.additions;
+							stat.activity.deletions += stats.deletions;
+						}
+						stat.files = (stat.files ?? 0) + stats.files;
 					}
-					stat.files = (stat.files ?? 0) + stats.files;
 				}
 			}
 		}
 
 		return { stats: statsByDayMap, markers: markersByDay };
-	}, [rows, downstreams, graphConfig?.minimap, graphConfig?.enabledMinimapMarkerTypes]);
+	}, [
+		rows,
+		rowsStats,
+		downstreams,
+		graphConfig?.minimap,
+		graphConfig?.minimapDataType,
+		graphConfig?.minimapMarkerTypes,
+	]);
 
 	const minimapSearchResults = useMemo(() => {
-		if (
-			!graphConfig?.minimap ||
-			!graphConfig.enabledMinimapMarkerTypes?.includes(GraphMinimapMarkerTypes.Highlights)
-		) {
+		if (!graphConfig?.minimap || !graphConfig.minimapMarkerTypes?.includes('highlights')) {
 			return undefined;
 		}
 
@@ -572,7 +609,7 @@ export function GraphWrapper({
 		}
 
 		return searchResultsByDay;
-	}, [searchResults, graphConfig?.minimap, graphConfig?.enabledMinimapMarkerTypes]);
+	}, [searchResults, graphConfig?.minimap, graphConfig?.minimapMarkerTypes]);
 
 	const handleOnMinimapDaySelected = (e: CustomEvent<GraphMinimapDaySelectedEventDetail>) => {
 		let { sha } = e.detail;
@@ -590,8 +627,45 @@ export function GraphWrapper({
 		graphRef.current?.selectCommits([sha], false, true);
 	};
 
-	const handleOnToggleMinimap = (_e: React.MouseEvent) => {
+	const handleOnMinimapToggle = (_e: React.MouseEvent) => {
 		onUpdateGraphConfiguration?.({ minimap: !graphConfig?.minimap });
+	};
+
+	// This can only be applied to one radio button for now due to a bug in the component: https://github.com/microsoft/fast/issues/6381
+	const handleOnMinimapDataTypeChange = (e: Event | FormEvent<HTMLElement>) => {
+		if (graphConfig == null) return;
+
+		const $el = e.target as HTMLInputElement;
+		if ($el.value === 'commits') {
+			const minimapDataType = $el.checked ? 'commits' : 'lines';
+			if (graphConfig.minimapDataType === minimapDataType) return;
+
+			setGraphConfig({ ...graphConfig, minimapDataType: minimapDataType });
+			onUpdateGraphConfiguration?.({ minimapDataType: minimapDataType });
+		}
+	};
+
+	const handleOnMinimapAdditionalTypesChange = (e: Event | FormEvent<HTMLElement>) => {
+		if (graphConfig?.minimapMarkerTypes == null) return;
+
+		const $el = e.target as HTMLInputElement;
+		const value = $el.value as GraphMinimapMarkerTypes;
+
+		if ($el.checked) {
+			if (!graphConfig.minimapMarkerTypes.includes(value)) {
+				const minimapMarkerTypes = [...graphConfig.minimapMarkerTypes, value];
+				setGraphConfig({ ...graphConfig, minimapMarkerTypes: minimapMarkerTypes });
+				onUpdateGraphConfiguration?.({ minimapMarkerTypes: minimapMarkerTypes });
+			}
+		} else {
+			const index = graphConfig.minimapMarkerTypes.indexOf(value);
+			if (index !== -1) {
+				const minimapMarkerTypes = [...graphConfig.minimapMarkerTypes];
+				minimapMarkerTypes.splice(index, 1);
+				setGraphConfig({ ...graphConfig, minimapMarkerTypes: minimapMarkerTypes });
+				onUpdateGraphConfiguration?.({ minimapMarkerTypes: minimapMarkerTypes });
+			}
+		}
 	};
 
 	const handleOnGraphMouseLeave = (_event: any) => {
@@ -631,20 +705,14 @@ export function GraphWrapper({
 	}, [includeOnlyRefsById]);
 
 	const hasFilters = useMemo(() => {
-		if (!isAllBranches) {
-			return true;
-		}
-
-		if (graphConfig?.dimMergeCommits) {
-			return true;
-		}
-
-		if (excludeTypes == null) {
-			return false;
-		}
-
+		if (!isAllBranches) return true;
+		if (excludeTypes == null) return false;
 		return Object.values(excludeTypes).includes(true);
 	}, [excludeTypes, isAllBranches, graphConfig?.dimMergeCommits]);
+
+	const hasSpecialFilters = useMemo(() => {
+		return !isAllBranches;
+	}, [isAllBranches]);
 
 	const handleSearchInput = (e: CustomEvent<SearchQuery>) => {
 		const detail = e.detail;
@@ -828,7 +896,7 @@ export function GraphWrapper({
 		onMissingRefsMetadata?.(metadata);
 	};
 
-	const handleToggleColumnSettings = (event: React.MouseEvent<HTMLButtonElement, globalThis.MouseEvent>) => {
+	const handleToggleColumnSettings = (event: React.MouseEvent<HTMLButtonElement>) => {
 		const e = event.nativeEvent;
 		const evt = new MouseEvent('contextmenu', {
 			bubbles: true,
@@ -850,6 +918,7 @@ export function GraphWrapper({
 				[columnName]: {
 					width: columnSettings.width,
 					isHidden: columnSettings.isHidden,
+					mode: columnSettings.mode as GraphColumnMode,
 					order: columnSettings.order,
 				},
 			});
@@ -876,7 +945,7 @@ export function GraphWrapper({
 	};
 
 	const handleOnDoubleClickRef = (
-		_event: React.MouseEvent<HTMLButtonElement, globalThis.MouseEvent>,
+		_event: React.MouseEvent<HTMLButtonElement>,
 		refGroup: GraphRefGroup,
 		_row: GraphRow,
 		metadata?: GraphRefMetadataItem,
@@ -887,11 +956,11 @@ export function GraphWrapper({
 	};
 
 	const handleOnDoubleClickRow = (
-		_event: React.MouseEvent<HTMLButtonElement, globalThis.MouseEvent>,
+		_event: React.MouseEvent<HTMLButtonElement>,
 		graphZoneType: GraphZoneType,
 		row: GraphRow,
 	) => {
-		if (graphZoneType === refZone || graphZoneType === commitZone) return;
+		if (graphZoneType === refZone) return;
 
 		onDoubleClickRow?.(row, true);
 	};
@@ -907,267 +976,179 @@ export function GraphWrapper({
 		onSelectionChange?.(rows);
 	};
 
-	const handleDismissAccount = () => {
-		setShowAccount(false);
-		onDismissBanner?.('trial');
-	};
+	const renderFetchAction = () => {
+		const lastFetchedDate = lastFetched && new Date(lastFetched);
+		const fetchedText = lastFetchedDate && lastFetchedDate.getTime() !== 0 ? fromNow(lastFetchedDate) : undefined;
 
-	const renderAccountState = () => {
-		if (!subscription) return;
+		let action: 'fetch' | 'pull' | 'push' = 'fetch';
 
-		let label = subscription.plan.effective.name;
-		let isPro = true;
-		let subText;
-		switch (subscription.state) {
-			case SubscriptionState.Free:
-			case SubscriptionState.FreePreviewTrialExpired:
-			case SubscriptionState.FreePlusTrialExpired:
-				isPro = false;
-				label = 'GitLens Free';
-				break;
-			case SubscriptionState.FreeInPreviewTrial:
-			case SubscriptionState.FreePlusInTrial: {
-				const days = getSubscriptionTimeRemaining(subscription, 'days') ?? 0;
-				label = 'GitLens Pro (Trial)';
-				subText = `${days < 1 ? '<1 day' : pluralize('day', days)} left`;
-				break;
+		let icon = 'sync';
+		let label = 'Fetch';
+		let isBehind = false;
+		let isAhead = false;
+
+		let tooltip = '';
+		let fetchTooltip = 'Fetch from';
+		let remote = 'remote';
+		if (branchState) {
+			isBehind = branchState.behind > 0;
+			isAhead = branchState.ahead > 0;
+			const branchPrefix = `Branch ${branchName} is`;
+			remote = `${branchState.upstream}${branchState.provider?.name ? ` on ${branchState.provider?.name}` : ''}`;
+			if (isBehind) {
+				action = 'pull';
+				icon = 'arrow-down';
+				label = 'Pull';
+				tooltip = `Pull from ${remote}\n${branchPrefix} ${pluralize('commit', branchState.behind)} behind of`;
+			} else if (isAhead) {
+				action = 'push';
+				icon = 'arrow-up';
+				label = 'Push';
+				tooltip = `Push to ${remote}\n${branchPrefix} ${pluralize('commit', branchState.ahead)} ahead of`;
 			}
-			case SubscriptionState.VerificationRequired:
-				isPro = false;
-				label = `${label} (Unverified)`;
-				break;
+			tooltip += ` ${remote}`;
+			fetchTooltip += ` ${remote}`;
+		}
+
+		if (fetchedText != null) {
+			const lastFetchedText = `\nLast fetched ${fetchedText}`;
+			tooltip += lastFetchedText;
+			fetchTooltip += lastFetchedText;
 		}
 
 		return (
-			<span className="badge-container mr-loose">
-				<span className="badge is-help">
-					<span className={`repo-access${isPro ? ' is-pro' : ''}`}>✨</span> {label}
-					{subText && (
-						<>
-							&nbsp;&nbsp;
-							<small>{subText}</small>
-						</>
-					)}
-				</span>
-				<PopOver placement="top end" className="badge-popover">
-					{isPro
-						? 'You have access to all GitLens and GitLens+ features on any repo.'
-						: 'You have access to GitLens+ features on local & public repos, and all other GitLens features on any repo.'}
-					<br />
-					<br />✨ indicates GitLens+ features
-				</PopOver>
-			</span>
-		);
-	};
-
-	const renderAlertContent = () => {
-		if (subscription == null || !isRepoPrivate || (isAccessAllowed && !showAccount)) return;
-
-		let icon = 'account';
-		let modifier = '';
-		let content;
-		let actions;
-		let days = 0;
-		if ([SubscriptionState.FreeInPreviewTrial, SubscriptionState.FreePlusInTrial].includes(subscription.state)) {
-			days = getSubscriptionTimeRemaining(subscription, 'days') ?? 0;
-		}
-
-		switch (subscription.state) {
-			case SubscriptionState.Free:
-			case SubscriptionState.Paid:
-				return;
-			case SubscriptionState.FreeInPreviewTrial:
-				icon = 'calendar';
-				modifier = 'neutral';
-				content = (
-					<>
-						<p className="alert__title">GitLens Pro Trial</p>
-						<p className="alert__message">
-							You have {days < 1 ? 'less than one day' : pluralize('day', days)} left in your 3-day
-							GitLens Pro trial. Don't worry if you need more time, you can extend your trial for an
-							additional free 7-days of the Commit Graph and other{' '}
-							<a href="command:gitlens.plus.learn">GitLens+ features</a> on private repos.
-						</p>
-					</>
-				);
-				break;
-			case SubscriptionState.FreePlusInTrial:
-				icon = 'calendar';
-				modifier = 'neutral';
-				content = (
-					<>
-						<p className="alert__title">GitLens Pro Trial</p>
-						<p className="alert__message">
-							You have {days < 1 ? 'less than one day' : pluralize('day', days)} left in your GitLens Pro
-							trial. Once your trial ends, you'll continue to have access to the Commit Graph and other{' '}
-							<a href="command:gitlens.plus.learn">GitLens+ features</a> on local and public repos, while
-							upgrading to GitLens Pro gives you access on private repos.
-						</p>
-					</>
-				);
-				break;
-			case SubscriptionState.FreePreviewTrialExpired:
-				icon = 'warning';
-				modifier = 'warning';
-				content = (
-					<>
-						<p className="alert__title">Extend Your GitLens Pro Trial</p>
-						<p className="alert__message">
-							Your free 3-day GitLens Pro trial has ended, extend your trial to get an additional free
-							7-days of the Commit Graph and other{' '}
-							<a href="command:gitlens.plus.learn">GitLens+ features</a> on private repos.
-						</p>
-					</>
-				);
-				actions = (
-					<a className="alert-action" href="command:gitlens.plus.loginOrSignUp">
-						Extend Pro Trial
+			<div className="titlebar__group">
+				{(isBehind || isAhead) && (
+					<a
+						href={createWebviewCommandLink(
+							`gitlens.graph.${action}`,
+							state.webviewId,
+							state.webviewInstanceId,
+						)}
+						className={`action-button${isBehind ? ' is-behind' : ''}${isAhead ? ' is-ahead' : ''}`}
+						title={tooltip}
+					>
+						<span className={`codicon codicon-${icon} action-button__icon`}></span>
+						{label}
+						{(isAhead || isBehind) && (
+							<span>
+								<span className="pill action-button__pill">
+									{isAhead && (
+										<span>
+											{branchState!.ahead} <span className="codicon codicon-arrow-up"></span>
+										</span>
+									)}
+									{isBehind && (
+										<span>
+											{branchState!.behind} <span className="codicon codicon-arrow-down"></span>
+										</span>
+									)}
+								</span>
+							</span>
+						)}
 					</a>
-				);
-				break;
-			case SubscriptionState.FreePlusTrialExpired:
-				icon = 'warning';
-				modifier = 'warning';
-				content = (
-					<>
-						<p className="alert__title">GitLens Pro Trial Expired</p>
-						<p className="alert__message">
-							Your GitLens Pro trial has ended, please upgrade to GitLens Pro to continue to use the
-							Commit Graph and other <a href="command:gitlens.plus.learn">GitLens+ features</a> on private
-							repos.
-						</p>
-					</>
-				);
-				actions = (
-					<a className="alert-action" href="command:gitlens.plus.purchase">
-						Upgrade to Pro
-					</a>
-				);
-				break;
-			case SubscriptionState.VerificationRequired:
-				icon = 'unverified';
-				modifier = 'warning';
-				content = (
-					<>
-						<p className="alert__title">Please verify your email</p>
-						<p className="alert__message">
-							Before you can use <a href="command:gitlens.plus.learn">GitLens+ features</a> on private
-							repos, please verify your email address.
-						</p>
-					</>
-				);
-				actions = (
-					<>
-						<a className="alert-action" href="command:gitlens.plus.resendVerification">
-							Resend Verification Email
-						</a>
-						<a className="alert-action" href="command:gitlens.plus.validate">
-							Refresh Verification Status
-						</a>
-					</>
-				);
-				break;
-		}
-
-		return (
-			<section className="graph-app__banners">
-				<div className={`alert${modifier !== '' ? ` alert--${modifier}` : ''}`}>
-					<span className={`alert__icon codicon codicon-${icon}`}></span>
-					<div className="alert__content">
-						{content}
-						{actions && <div className="alert__actions">{actions}</div>}
-					</div>
-					{isAccessAllowed && (
-						<button className="alert__dismiss" type="button" onClick={() => handleDismissAccount()}>
-							<span className="codicon codicon-chrome-close"></span>
-						</button>
-					)}
-				</div>
-			</section>
+				)}
+				<a
+					href={createWebviewCommandLink('gitlens.graph.fetch', state.webviewId, state.webviewInstanceId)}
+					className="action-button"
+					title={fetchTooltip}
+				>
+					<span className="codicon codicon-sync action-button__icon"></span>
+					Fetch
+					{fetchedText && <span className="action-button__small">({fetchedText})</span>}
+				</a>
+			</div>
 		);
 	};
 
 	return (
 		<>
-			{renderAlertContent()}
 			<header className="titlebar graph-app__header">
-				<div className="titlebar__row titlebar__row--wrap">
-					<div className="titlebar__group titlebar__group--fixed">
-						<button
-							type="button"
+				<div
+					className={`titlebar__row titlebar__row--wrap${
+						!allowed ? ' disallowed' : repo && branchState?.provider?.url ? '' : ' no-remote-provider'
+					}`}
+				>
+					{repo && branchState?.provider?.url && (
+						<a
+							href={branchState.provider.url}
 							className="action-button"
-							slot="trigger"
-							title="Switch to Another Repository..."
-							disabled={repos.length < 2}
-							onClick={() => handleChooseRepository()}
+							style={{ marginRight: '-0.5rem' }}
+							title={`Open Repository on ${branchState.provider.name}`}
+							aria-label={`Open Repository on ${branchState.provider.name}`}
 						>
-							{repo?.formattedName ?? 'none selected'}
-							{repos.length > 1 && (
+							<span
+								className={
+									branchState.provider.icon === 'cloud'
+										? 'codicon codicon-cloud action-button__icon'
+										: `glicon glicon-provider-${branchState.provider.icon} action-button__icon`
+								}
+								aria-hidden="true"
+							></span>
+						</a>
+					)}
+					<button
+						type="button"
+						className="action-button"
+						slot="trigger"
+						title="Switch to Another Repository..."
+						aria-label="Switch to Another Repository..."
+						disabled={repos.length < 2}
+						onClick={() => handleChooseRepository()}
+					>
+						{repo?.formattedName ?? 'none selected'}
+						{repos.length > 1 && (
+							<span
+								className="codicon codicon-chevron-down action-button__more"
+								aria-hidden="true"
+							></span>
+						)}
+					</button>
+					{allowed && repo && (
+						<>
+							<span>
+								<span className="codicon codicon-chevron-right"></span>
+							</span>
+							<a
+								href={createWebviewCommandLink(
+									'gitlens.graph.switchToAnotherBranch',
+									state.webviewId,
+									state.webviewInstanceId,
+								)}
+								className="action-button"
+								title="Switch to Another Branch..."
+								aria-label="Switch to Another Branch..."
+							>
+								{branchName}
 								<span
 									className="codicon codicon-chevron-down action-button__more"
 									aria-hidden="true"
 								></span>
-							)}
-						</button>
-						{repo && (
-							<>
-								<span>
-									<span className="codicon codicon-chevron-right"></span>
-								</span>
-								<a
-									href="command:gitlens.graph.switchToAnotherBranch"
-									className="action-button"
-									title="Switch to Another Branch..."
-								>
-									{branchName}
-									<span
-										className="codicon codicon-chevron-down action-button__more"
-										aria-hidden="true"
-									></span>
-								</a>
-								<span>
-									<span className="codicon codicon-chevron-right"></span>
-								</span>
-								<a
-									href="command:gitlens.graph.fetch"
-									className="action-button"
-									title="Fetch Repository"
-								>
-									<span className="codicon codicon-sync action-button__icon"></span> Fetch{' '}
-									{lastFetched && <small>(Last fetched {fromNow(new Date(lastFetched))})</small>}
-								</a>
-							</>
-						)}
-					</div>
-					<div className="titlebar__group titlebar__group--fixed">
-						{state.debugging && (
-							<span className="titlebar__group titlebar__debugging">
-								{isLoading && <span className="icon--loading icon-modifier--spin" />}
-								{rows.length > 0 && (
-									<span>
-										showing {rows.length} item{rows.length ? 's' : ''}
-									</span>
-								)}
+							</a>
+							<span>
+								<span className="codicon codicon-chevron-right"></span>
 							</span>
-						)}
-						{renderAccountState()}
-						<a
-							href="https://github.com/gitkraken/vscode-gitlens/discussions/2158"
-							title="Commit Graph Feedback"
-							aria-label="Commit Graph Feedback"
-							className="action-button"
-						>
-							<span className="codicon codicon-feedback"></span>
+							{renderFetchAction()}
+						</>
+					)}
+					<FeatureGateBadge subscription={subscription}></FeatureGateBadge>
+					<div className="popover">
+						<a href="command:gitlens.showFocusPage" className="action-button popover__trigger">
+							Try the Focus Preview
 						</a>
+						<PopOver placement="top end" className="popover__content">
+							Bring all of your GitHub pull requests and issues into a unified actionable to help to you
+							more easily juggle work in progress, pending work, reviews, and more
+						</PopOver>
 					</div>
 				</div>
-				{isAccessAllowed && (
+				{allowed && (
 					<div className="titlebar__row">
 						<div className="titlebar__group">
 							<PopMenu>
 								<button type="button" className="action-button" slot="trigger" title="Filter Graph">
 									<span className={`codicon codicon-filter${hasFilters ? '-filled' : ''}`}></span>
-									{hasFilters && <span className="action-button__indicator"></span>}
+									{hasSpecialFilters && <span className="action-button__indicator"></span>}
 									<span
 										className="codicon codicon-chevron-down action-button__more"
 										aria-hidden="true"
@@ -1191,7 +1172,7 @@ export function GraphWrapper({
 													value="branch-all"
 													onChange={handleLocalBranchFiltering}
 												>
-													Show All Local Branches
+													Show All Branches
 												</VSCodeRadio>
 											)}
 											<VSCodeRadio name="branching-toggle" value="branch-current">
@@ -1208,7 +1189,7 @@ export function GraphWrapper({
 													onChange={handleExcludeTypeChange}
 													defaultChecked={excludeTypes?.remotes ?? false}
 												>
-													Hide Remote Branches
+													Hide Remote-only Branches
 												</VSCodeCheckbox>
 											</MenuItem>
 											<MenuItem role="none">
@@ -1258,46 +1239,148 @@ export function GraphWrapper({
 								errorMessage={searchResultsError?.error ?? ''}
 								resultsHidden={searchResultsHidden}
 								resultsLoaded={searchResults != null}
-								onChange={e => handleSearchInput(e as CustomEvent<SearchQuery>)}
-								onNavigate={e => handleSearchNavigation(e as CustomEvent<SearchNavigationEventDetail>)}
+								onChange={e => handleSearchInput(e)}
+								onNavigate={e => handleSearchNavigation(e)}
 								onOpenInView={() => handleSearchOpenInView()}
 							/>
 							<span>
 								<span className="action-divider"></span>
 							</span>
-							<button
-								type="button"
-								className="action-button action-button--narrow"
-								title="Toggle Minimap (Experimental)"
-								aria-label="Toggle Minimap (Experimental)"
-								onClick={handleOnToggleMinimap}
-							>
-								<span className="codicon codicon-graph-line action-button__icon"></span>
-							</button>
+							<span className="button-group">
+								<button
+									type="button"
+									role="checkbox"
+									className="action-button"
+									title="Toggle Minimap"
+									aria-label="Toggle Minimap"
+									aria-checked={graphConfig?.minimap ?? false}
+									onClick={handleOnMinimapToggle}
+								>
+									<span className="codicon codicon-graph-line action-button__icon"></span>
+								</button>
+								<PopMenu position="right">
+									<button
+										type="button"
+										className="action-button"
+										slot="trigger"
+										title="Minimap Options"
+									>
+										<span
+											className="codicon codicon-chevron-down action-button__more"
+											aria-hidden="true"
+										></span>
+									</button>
+									<MenuList slot="content">
+										<MenuLabel>Chart</MenuLabel>
+										<MenuItem role="none">
+											<VSCodeRadioGroup
+												orientation="vertical"
+												value={graphConfig?.minimapDataType ?? 'commits'}
+											>
+												<VSCodeRadio
+													name="minimap-datatype"
+													value="commits"
+													onChange={handleOnMinimapDataTypeChange}
+												>
+													Commits
+												</VSCodeRadio>
+												<VSCodeRadio name="minimap-datatype" value="lines">
+													Lines Changed
+												</VSCodeRadio>
+											</VSCodeRadioGroup>
+										</MenuItem>
+										<MenuDivider></MenuDivider>
+										<MenuLabel>Markers</MenuLabel>
+										<MenuItem role="none">
+											<VSCodeCheckbox
+												value="localBranches"
+												onChange={handleOnMinimapAdditionalTypesChange}
+												defaultChecked={
+													graphConfig?.minimapMarkerTypes?.includes('localBranches') ?? false
+												}
+											>
+												<span
+													className="minimap-marker-swatch"
+													data-marker="localBranches"
+												></span>
+												Local Branches
+											</VSCodeCheckbox>
+										</MenuItem>
+										<MenuItem role="none">
+											<VSCodeCheckbox
+												value="remoteBranches"
+												onChange={handleOnMinimapAdditionalTypesChange}
+												defaultChecked={
+													graphConfig?.minimapMarkerTypes?.includes('remoteBranches') ?? true
+												}
+											>
+												<span
+													className="minimap-marker-swatch"
+													data-marker="remoteBranches"
+												></span>
+												Remote Branches
+											</VSCodeCheckbox>
+										</MenuItem>
+										<MenuItem role="none">
+											<VSCodeCheckbox
+												value="stashes"
+												onChange={handleOnMinimapAdditionalTypesChange}
+												defaultChecked={
+													graphConfig?.minimapMarkerTypes?.includes('stashes') ?? false
+												}
+											>
+												<span className="minimap-marker-swatch" data-marker="stashes"></span>
+												Stashes
+											</VSCodeCheckbox>
+										</MenuItem>
+										<MenuItem role="none">
+											<VSCodeCheckbox
+												value="tags"
+												onChange={handleOnMinimapAdditionalTypesChange}
+												defaultChecked={
+													graphConfig?.minimapMarkerTypes?.includes('tags') ?? true
+												}
+											>
+												<span className="minimap-marker-swatch" data-marker="tags"></span>
+												Tags
+											</VSCodeCheckbox>
+										</MenuItem>
+									</MenuList>
+								</PopMenu>
+							</span>
 						</div>
 					</div>
 				)}
-				<div className={`progress-container infinite${isLoading ? ' active' : ''}`} role="progressbar">
+				<div
+					className={`progress-container infinite${isLoading || rowsStatsLoading ? ' active' : ''}`}
+					role="progressbar"
+				>
 					<div className="progress-bar"></div>
 				</div>
 			</header>
+			<FeatureGate className="graph-app__gate" appearance="alert" state={subscription?.state} visible={!allowed}>
+				<p slot="feature">
+					Helps you easily visualize your repository and keep track of all work in progress.
+					<br />
+					<br />
+					Use the rich commit search to find exactly what you're looking for. It's powerful filters allow you
+					to search by a specific commit, message, author, a changed file or files, or even a specific code
+					change.
+				</p>
+			</FeatureGate>
 			{graphConfig?.minimap && (
 				<GraphMinimap
 					ref={minimap as any}
 					activeDay={activeDay}
 					data={minimapData?.stats}
+					dataType={graphConfig?.minimapDataType ?? 'commits'}
 					markers={minimapData?.markers}
 					searchResults={minimapSearchResults}
 					visibleDays={visibleDays}
-					onSelected={e => handleOnMinimapDaySelected(e as CustomEvent<GraphMinimapDaySelectedEventDetail>)}
+					onSelected={e => handleOnMinimapDaySelected(e)}
 				></GraphMinimap>
 			)}
-			<main
-				id="main"
-				className={`graph-app__main${!isAccessAllowed ? ' is-gated' : ''}`}
-				aria-hidden={!isAccessAllowed}
-			>
-				{!isAccessAllowed && <div className="graph-app__cover"></div>}
+			<main id="main" className="graph-app__main" aria-hidden={!allowed}>
 				{repo !== undefined ? (
 					<>
 						<GraphContainer
@@ -1309,9 +1392,8 @@ export function GraphWrapper({
 							dimMergeCommits={graphConfig?.dimMergeCommits}
 							downstreamsByUpstream={downstreams}
 							enabledRefMetadataTypes={graphConfig?.enabledRefMetadataTypes}
-							enabledScrollMarkerTypes={
-								graphConfig?.enabledScrollMarkerTypes as GraphMarkerType[] | undefined
-							}
+							enabledScrollMarkerTypes={graphConfig?.scrollMarkerTypes}
+							enableShowHideRefsOptions
 							enableMultiSelection={graphConfig?.enableMultiSelection}
 							excludeRefsById={excludeRefsById}
 							excludeByType={excludeTypes}
@@ -1336,6 +1418,7 @@ export function GraphWrapper({
 							onGraphColumnsReOrdered={handleOnGraphColumnsReOrdered}
 							onGraphMouseLeave={minimap.current ? handleOnGraphMouseLeave : undefined}
 							onGraphRowHovered={minimap.current ? handleOnGraphRowHovered : undefined}
+							onSettingsClick={handleToggleColumnSettings}
 							onSelectGraphRows={handleSelectGraphRows}
 							onToggleRefsVisibilityClick={handleOnToggleRefsVisibilityClick}
 							onEmailsMissingAvatarUrls={handleMissingAvatars}
@@ -1344,6 +1427,8 @@ export function GraphWrapper({
 							onGraphVisibleRowsChanged={minimap.current ? handleOnGraphVisibleRowsChanged : undefined}
 							platform={clientPlatform}
 							refMetadataById={refsMetadata}
+							rowsStats={rowsStats}
+							rowsStatsLoading={rowsStatsLoading}
 							shaLength={graphConfig?.idLength}
 							themeOpacityFactor={styleProps?.themeOpacityFactor}
 							useAuthorInitialsForAvatars={!graphConfig?.avatars}
@@ -1353,18 +1438,6 @@ export function GraphWrapper({
 				) : (
 					<p>No repository is selected</p>
 				)}
-				<button
-					className="column-button"
-					type="button"
-					role="button"
-					data-vscode-context={context?.header || JSON.stringify({ webviewItem: 'gitlens:graph:columns' })}
-					onClick={handleToggleColumnSettings}
-				>
-					<span
-						className="codicon codicon-settings-gear columnsettings__icon"
-						aria-label="Column Settings"
-					></span>
-				</button>
 			</main>
 		</>
 	);
@@ -1372,7 +1445,7 @@ export function GraphWrapper({
 
 function formatCommitDateTime(
 	date: number,
-	style: DateStyle = DateStyle.Absolute,
+	style: DateStyle = 'absolute',
 	format: DateTimeFormat | string = 'short+short',
 	source?: CommitDateTimeSources,
 ): string {
@@ -1381,7 +1454,7 @@ function formatCommitDateTime(
 			return `${formatDate(date, format)} (${fromNow(date)})`;
 		case CommitDateTimeSources.RowEntry:
 		default:
-			return style === DateStyle.Relative ? fromNow(date) : formatDate(date, format);
+			return style === 'relative' ? fromNow(date) : formatDate(date, format);
 	}
 }
 

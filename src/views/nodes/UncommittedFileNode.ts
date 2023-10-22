@@ -1,6 +1,6 @@
 import type { Command } from 'vscode';
 import { TreeItem, TreeItemCollapsibleState } from 'vscode';
-import type { DiffWithPreviousCommandArgs } from '../../commands';
+import type { DiffWithPreviousCommandArgs } from '../../commands/diffWithPrevious';
 import { Commands } from '../../constants';
 import { StatusFileFormatter } from '../../git/formatters/statusFormatter';
 import { GitUri } from '../../git/gitUri';
@@ -12,9 +12,9 @@ import type { FileNode } from './folderNode';
 import type { ViewNode } from './viewNode';
 import { ContextValues, ViewFileNode } from './viewNode';
 
-export class UncommittedFileNode extends ViewFileNode<ViewsWithCommits> implements FileNode {
+export class UncommittedFileNode extends ViewFileNode<'uncommitted-file', ViewsWithCommits> implements FileNode {
 	constructor(view: ViewsWithCommits, parent: ViewNode, repoPath: string, file: GitFile) {
-		super(GitUri.fromFile(file, repoPath), view, parent, file);
+		super('uncommitted-file', GitUri.fromFile(file, repoPath), view, parent, file);
 	}
 
 	override toClipboard(): string {

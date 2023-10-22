@@ -18,19 +18,21 @@ import type {
 	StepState,
 } from '../quickCommand';
 import {
-	appendReposToTitle,
 	canPickStepContinue,
 	createConfirmStep,
 	createPickStep,
 	endSteps,
+	QuickCommand,
+	StepResultBreak,
+} from '../quickCommand';
+import {
+	appendReposToTitle,
 	inputBranchNameStep,
 	pickBranchesStep,
 	pickBranchOrTagStep,
 	pickBranchStep,
 	pickRepositoryStep,
-	QuickCommand,
-	StepResultBreak,
-} from '../quickCommand';
+} from '../quickCommand.steps';
 
 interface Context {
 	repos: Repository[];
@@ -218,7 +220,9 @@ export class BranchGitCommand extends QuickCommand<State> {
 				skippedStepTwo = false;
 				if (context.repos.length === 1) {
 					skippedStepTwo = true;
-					state.counter++;
+					if (state.repo == null) {
+						state.counter++;
+					}
 
 					state.repo = context.repos[0];
 				} else {
@@ -341,10 +345,7 @@ export class BranchGitCommand extends QuickCommand<State> {
 		}
 	}
 
-	private *createCommandConfirmStep(
-		state: CreateStepState<CreateState>,
-		context: Context,
-	): StepResultGenerator<CreateFlags[]> {
+	private *createCommandConfirmStep(state: CreateStepState, context: Context): StepResultGenerator<CreateFlags[]> {
 		const step: QuickPickStep<FlagsQuickPickItem<CreateFlags>> = createConfirmStep(
 			appendReposToTitle(`Confirm ${context.title}`, state, context),
 			[
@@ -505,10 +506,7 @@ export class BranchGitCommand extends QuickCommand<State> {
 		}
 	}
 
-	private *renameCommandConfirmStep(
-		state: RenameStepState<RenameState>,
-		context: Context,
-	): StepResultGenerator<RenameFlags[]> {
+	private *renameCommandConfirmStep(state: RenameStepState, context: Context): StepResultGenerator<RenameFlags[]> {
 		const step: QuickPickStep<FlagsQuickPickItem<RenameFlags>> = createConfirmStep(
 			appendReposToTitle(`Confirm ${context.title}`, state, context),
 			[

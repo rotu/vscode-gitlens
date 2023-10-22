@@ -10,30 +10,20 @@ import { debug } from '../../system/decorators/log';
 import { map } from '../../system/iterable';
 import { pluralize } from '../../system/string';
 import type { ContactPresence } from '../../vsls/vsls';
-import type { ContributorsView } from '../contributorsView';
-import type { RepositoriesView } from '../repositoriesView';
+import type { ViewsWithContributors } from '../viewBase';
 import { CommitNode } from './commitNode';
 import { LoadMoreNode, MessageNode } from './common';
 import { insertDateMarkers } from './helpers';
-import { RepositoryNode } from './repositoryNode';
 import type { PageableViewNode } from './viewNode';
-import { ContextValues, ViewNode } from './viewNode';
+import { ContextValues, getViewNodeId, ViewNode } from './viewNode';
 
-export class ContributorNode extends ViewNode<ContributorsView | RepositoriesView> implements PageableViewNode {
-	static key = ':contributor';
-	static getId(
-		repoPath: string,
-		name: string | undefined,
-		email: string | undefined,
-		username: string | undefined,
-	): string {
-		return `${RepositoryNode.getId(repoPath)}${this.key}(${name}|${email}|${username})`;
-	}
+export class ContributorNode extends ViewNode<'contributor', ViewsWithContributors> implements PageableViewNode {
+	limit: number | undefined;
 
 	constructor(
 		uri: GitUri,
-		view: ContributorsView | RepositoriesView,
-		parent: ViewNode,
+		view: ViewsWithContributors,
+		protected override readonly parent: ViewNode,
 		public readonly contributor: GitContributor,
 		private readonly _options?: {
 			all?: boolean;
@@ -41,20 +31,19 @@ export class ContributorNode extends ViewNode<ContributorsView | RepositoriesVie
 			presence: Map<string, ContactPresence> | undefined;
 		},
 	) {
-		super(uri, view, parent);
+		super('contributor', uri, view, parent);
+
+		this.updateContext({ contributor: contributor });
+		this._uniqueId = getViewNodeId(this.type, this.context);
+		this.limit = this.view.getNodeLastKnownLimit(this);
+	}
+
+	override get id(): string {
+		return this._uniqueId;
 	}
 
 	override toClipboard(): string {
 		return `${this.contributor.name}${this.contributor.email ? ` <${this.contributor.email}>` : ''}`;
-	}
-
-	override get id(): string {
-		return ContributorNode.getId(
-			this.contributor.repoPath,
-			this.contributor.name,
-			this.contributor.email,
-			this.contributor.username,
-		);
 	}
 
 	get repoPath(): string {
@@ -199,7 +188,6 @@ export class ContributorNode extends ViewNode<ContributorsView | RepositoriesVie
 		return this._log?.hasMore ?? true;
 	}
 
-	limit: number | undefined = this.view.getNodeLastKnownLimit(this);
 	@gate()
 	async loadMore(limit?: number | { until?: any }) {
 		let log = await window.withProgress(

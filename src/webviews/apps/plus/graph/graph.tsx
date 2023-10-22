@@ -5,7 +5,6 @@ import { render, unmountComponentAtNode } from 'react-dom';
 import type { GitGraphRowType } from '../../../../git/models/graph';
 import type { SearchQuery } from '../../../../git/search';
 import type {
-	DismissBannerParams,
 	GraphAvatars,
 	GraphColumnsConfig,
 	GraphExcludedRef,
@@ -21,11 +20,14 @@ import {
 	ChooseRepositoryCommandType,
 	DidChangeAvatarsNotificationType,
 	DidChangeColumnsNotificationType,
+	DidChangeFocusNotificationType,
 	DidChangeGraphConfigurationNotificationType,
 	DidChangeNotificationType,
 	DidChangeRefsMetadataNotificationType,
 	DidChangeRefsVisibilityNotificationType,
 	DidChangeRowsNotificationType,
+	DidChangeRowsStatsNotificationType,
+	DidChangeScrollMarkersNotificationType,
 	DidChangeSelectionNotificationType,
 	DidChangeSubscriptionNotificationType,
 	DidChangeWindowFocusNotificationType,
@@ -34,7 +36,6 @@ import {
 	DidFetchNotificationType,
 	DidSearchNotificationType,
 	DimMergeCommitsCommandType,
-	DismissBannerCommandType,
 	DoubleClickedCommandType,
 	EnsureRowCommandType,
 	GetMissingAvatarsCommandType,
@@ -49,7 +50,7 @@ import {
 	UpdateRefsVisibilityCommandType,
 	UpdateSelectionCommandType,
 } from '../../../../plus/webviews/graph/protocol';
-import { Color, darken, lighten, mix, opacity } from '../../../../system/color';
+import { Color, darken, getCssVariable, lighten, mix, opacity } from '../../../../system/color';
 import { debounce } from '../../../../system/function';
 import type { IpcMessage, IpcNotificationType } from '../../../protocol';
 import { onIpc } from '../../../protocol';
@@ -114,7 +115,6 @@ export class GraphApp extends App<State> {
 						rows => this.onSelectionChanged(rows),
 						250,
 					)}
-					onDismissBanner={key => this.onDismissBanner(key)}
 					onEnsureRowPromise={this.onEnsureRowPromise.bind(this)}
 					onExcludeType={this.onExcludeType.bind(this)}
 					onIncludeOnlyRef={this.onIncludeOnlyRef.bind(this)}
@@ -163,6 +163,11 @@ export class GraphApp extends App<State> {
 					this.setState(this.state, type);
 				});
 				break;
+			case DidChangeFocusNotificationType.method:
+				onIpc(DidChangeFocusNotificationType, msg, params => {
+					window.dispatchEvent(new CustomEvent(params.focused ? 'webview-focus' : 'webview-blur'));
+				});
+				break;
 
 			case DidChangeWindowFocusNotificationType.method:
 				onIpc(DidChangeWindowFocusNotificationType, msg, (params, type) => {
@@ -174,16 +179,11 @@ export class GraphApp extends App<State> {
 			case DidChangeColumnsNotificationType.method:
 				onIpc(DidChangeColumnsNotificationType, msg, (params, type) => {
 					this.state.columns = params.columns;
-					if (params.context != null) {
-						if (this.state.context == null) {
-							this.state.context = { header: params.context };
-						} else {
-							this.state.context.header = params.context;
-						}
-					} else if (this.state.context?.header != null) {
-						this.state.context.header = undefined;
-					}
-
+					this.state.context = {
+						...this.state.context,
+						header: params.context,
+						settings: params.settingsContext,
+					};
 					this.setState(this.state, type);
 				});
 				break;
@@ -272,10 +272,29 @@ export class GraphApp extends App<State> {
 					}
 					this.state.rows = rows;
 					this.state.paging = params.paging;
+					if (params.rowsStats != null) {
+						this.state.rowsStats = { ...this.state.rowsStats, ...params.rowsStats };
+					}
+					this.state.rowsStatsLoading = params.rowsStatsLoading;
 					if (params.selectedRows != null) {
 						this.state.selectedRows = params.selectedRows;
 					}
 					this.state.loading = false;
+					this.setState(this.state, type);
+				});
+				break;
+
+			case DidChangeRowsStatsNotificationType.method:
+				onIpc(DidChangeRowsStatsNotificationType, msg, (params, type) => {
+					this.state.rowsStats = { ...this.state.rowsStats, ...params.rowsStats };
+					this.state.rowsStatsLoading = params.rowsStatsLoading;
+					this.setState(this.state, type);
+				});
+				break;
+
+			case DidChangeScrollMarkersNotificationType.method:
+				onIpc(DidChangeScrollMarkersNotificationType, msg, (params, type) => {
+					this.state.context = { ...this.state.context, settings: params.context };
 					this.setState(this.state, type);
 				});
 				break;
@@ -325,34 +344,30 @@ export class GraphApp extends App<State> {
 	}
 
 	protected override onThemeUpdated(e: ThemeChangeEvent) {
-		const bodyStyle = document.body.style;
-		bodyStyle.setProperty('--graph-theme-opacity-factor', e.isLightTheme ? '0.5' : '1');
+		const rootStyle = document.documentElement.style;
+		rootStyle.setProperty('--graph-theme-opacity-factor', e.isLightTheme ? '0.5' : '1');
 
-		bodyStyle.setProperty(
+		rootStyle.setProperty(
 			'--color-graph-actionbar-background',
 			e.isLightTheme ? darken(e.colors.background, 5) : lighten(e.colors.background, 5),
 		);
-		bodyStyle.setProperty(
-			'--color-graph-actionbar-selectedBackground',
-			e.isLightTheme ? darken(e.colors.background, 10) : lighten(e.colors.background, 10),
-		);
 
-		bodyStyle.setProperty(
+		rootStyle.setProperty(
 			'--color-graph-background',
 			e.isLightTheme ? darken(e.colors.background, 5) : lighten(e.colors.background, 5),
 		);
-		bodyStyle.setProperty(
+		rootStyle.setProperty(
 			'--color-graph-background2',
 			e.isLightTheme ? darken(e.colors.background, 10) : lighten(e.colors.background, 10),
 		);
 
-		const color = e.computedStyle.getPropertyValue('--color-graph-text-selected-row').trim();
-		bodyStyle.setProperty('--color-graph-text-dimmed-selected', opacity(color, 50));
-		bodyStyle.setProperty('--color-graph-text-dimmed', opacity(e.colors.foreground, 20));
+		const color = getCssVariable('--color-graph-text-selected-row', e.computedStyle);
+		rootStyle.setProperty('--color-graph-text-dimmed-selected', opacity(color, 50));
+		rootStyle.setProperty('--color-graph-text-dimmed', opacity(e.colors.foreground, 20));
 
-		bodyStyle.setProperty('--color-graph-text-normal', opacity(e.colors.foreground, 85));
-		bodyStyle.setProperty('--color-graph-text-secondary', opacity(e.colors.foreground, 65));
-		bodyStyle.setProperty('--color-graph-text-disabled', opacity(e.colors.foreground, 50));
+		rootStyle.setProperty('--color-graph-text-normal', opacity(e.colors.foreground, 85));
+		rootStyle.setProperty('--color-graph-text-secondary', opacity(e.colors.foreground, 65));
+		rootStyle.setProperty('--color-graph-text-disabled', opacity(e.colors.foreground, 50));
 
 		const backgroundColor = Color.from(e.colors.background);
 		const foregroundColor = Color.from(e.colors.foreground);
@@ -377,42 +392,81 @@ export class GraphApp extends App<State> {
 		// minimap and scroll markers
 
 		let c = Color.fromCssVariable('--vscode-scrollbarSlider-background', e.computedStyle);
-		bodyStyle.setProperty(
+		rootStyle.setProperty(
 			'--color-graph-minimap-visibleAreaBackground',
 			c.luminance(themeLuminance(e.isLightTheme ? 0.6 : 0.1)).toString(),
 		);
 
 		if (!e.isLightTheme) {
 			c = Color.fromCssVariable('--color-graph-scroll-marker-local-branches', e.computedStyle);
-			bodyStyle.setProperty(
+			rootStyle.setProperty(
 				'--color-graph-minimap-tip-branchBackground',
 				c.luminance(themeLuminance(0.55)).toString(),
 			);
 
 			c = Color.fromCssVariable('--color-graph-scroll-marker-local-branches', e.computedStyle);
-			bodyStyle.setProperty(
+			rootStyle.setProperty(
 				'--color-graph-minimap-tip-branchBorder',
 				c.luminance(themeLuminance(0.55)).toString(),
 			);
 
 			c = Color.fromCssVariable('--vscode-editor-foreground', e.computedStyle);
-			bodyStyle.setProperty(
+			rootStyle.setProperty(
 				'--color-graph-minimap-tip-branchForeground',
 				c.isLighter() ? c.luminance(0.01).toString() : c.luminance(0.99).toString(),
 			);
 
 			c = Color.fromCssVariable('--vscode-editor-foreground', e.computedStyle);
-			bodyStyle.setProperty(
+			rootStyle.setProperty(
 				'--color-graph-minimap-tip-headForeground',
 				c.isLighter() ? c.luminance(0.01).toString() : c.luminance(0.99).toString(),
 			);
 
 			c = Color.fromCssVariable('--vscode-editor-foreground', e.computedStyle);
-			bodyStyle.setProperty(
+			rootStyle.setProperty(
 				'--color-graph-minimap-tip-upstreamForeground',
 				c.isLighter() ? c.luminance(0.01).toString() : c.luminance(0.99).toString(),
 			);
 		}
+
+		const branchStatusLuminance = themeLuminance(e.isLightTheme ? 0.72 : 0.064);
+		const branchStatusHoverLuminance = themeLuminance(e.isLightTheme ? 0.64 : 0.076);
+		const branchStatusPillLuminance = themeLuminance(e.isLightTheme ? 0.92 : 0.02);
+		// branch status ahead
+		c = Color.fromCssVariable('--branch-status-ahead-foreground', e.computedStyle);
+		rootStyle.setProperty('--branch-status-ahead-background', c.luminance(branchStatusLuminance).toString());
+		rootStyle.setProperty(
+			'--branch-status-ahead-hover-background',
+			c.luminance(branchStatusHoverLuminance).toString(),
+		);
+		rootStyle.setProperty(
+			'--branch-status-ahead-pill-background',
+			c.luminance(branchStatusPillLuminance).toString(),
+		);
+
+		// branch status behind
+		c = Color.fromCssVariable('--branch-status-behind-foreground', e.computedStyle);
+		rootStyle.setProperty('--branch-status-behind-background', c.luminance(branchStatusLuminance).toString());
+		rootStyle.setProperty(
+			'--branch-status-behind-hover-background',
+			c.luminance(branchStatusHoverLuminance).toString(),
+		);
+		rootStyle.setProperty(
+			'--branch-status-behind-pill-background',
+			c.luminance(branchStatusPillLuminance).toString(),
+		);
+
+		// branch status both
+		c = Color.fromCssVariable('--branch-status-both-foreground', e.computedStyle);
+		rootStyle.setProperty('--branch-status-both-background', c.luminance(branchStatusLuminance).toString());
+		rootStyle.setProperty(
+			'--branch-status-both-hover-background',
+			c.luminance(branchStatusHoverLuminance).toString(),
+		);
+		rootStyle.setProperty(
+			'--branch-status-both-pill-background',
+			c.luminance(branchStatusPillLuminance).toString(),
+		);
 
 		if (e.isInitializing) return;
 
@@ -424,9 +478,8 @@ export class GraphApp extends App<State> {
 		this.log(`setState()`);
 		const themingChanged = this.ensureTheming(state);
 
-		// Avoid calling the base for now, since we aren't using the vscode state
 		this.state = state;
-		// super.setState(state);
+		super.setState({ timestamp: state.timestamp, selectedRepository: state.selectedRepository });
 
 		this.callback?.(this.state, type, themingChanged);
 	}
@@ -441,15 +494,15 @@ export class GraphApp extends App<State> {
 
 	private getGraphTheming(): { cssVariables: CssVariables; themeOpacityFactor: number } {
 		// this will be called on theme updated as well as on config updated since it is dependent on the column colors from config changes and the background color from the theme
-		const computedStyle = window.getComputedStyle(document.body);
-		const bgColor = computedStyle.getPropertyValue('--color-background');
+		const computedStyle = window.getComputedStyle(document.documentElement);
+		const bgColor = getCssVariable('--color-background', computedStyle);
 
 		const mixedGraphColors: CssVariables = {};
 
 		let i = 0;
 		let color;
 		for (const [colorVar, colorDefault] of graphLaneThemeColors) {
-			color = computedStyle.getPropertyValue(colorVar) || colorDefault;
+			color = getCssVariable(colorVar, computedStyle) || colorDefault;
 
 			mixedGraphColors[`--column-${i}-color`] = color;
 
@@ -469,39 +522,65 @@ export class GraphApp extends App<State> {
 		return {
 			cssVariables: {
 				'--app__bg0': bgColor,
-				'--panel__bg0': computedStyle.getPropertyValue('--color-graph-background'),
-				'--panel__bg1': computedStyle.getPropertyValue('--color-graph-background2'),
-				'--section-border': computedStyle.getPropertyValue('--color-graph-background2'),
+				'--panel__bg0': getCssVariable('--color-graph-background', computedStyle),
+				'--panel__bg1': getCssVariable('--color-graph-background2', computedStyle),
+				'--section-border': getCssVariable('--color-graph-background2', computedStyle),
 
-				'--selected-row': computedStyle.getPropertyValue('--color-graph-selected-row'),
+				'--selected-row': getCssVariable('--color-graph-selected-row', computedStyle),
 				'--selected-row-border': isHighContrastTheme
-					? `1px solid ${computedStyle.getPropertyValue('--color-graph-contrast-border')}`
+					? `1px solid ${getCssVariable('--color-graph-contrast-border', computedStyle)}`
 					: 'none',
-				'--hover-row': computedStyle.getPropertyValue('--color-graph-hover-row'),
+				'--hover-row': getCssVariable('--color-graph-hover-row', computedStyle),
 				'--hover-row-border': isHighContrastTheme
-					? `1px dashed ${computedStyle.getPropertyValue('--color-graph-contrast-border')}`
+					? `1px dashed ${getCssVariable('--color-graph-contrast-border', computedStyle)}`
 					: 'none',
 
-				'--text-selected': computedStyle.getPropertyValue('--color-graph-text-selected'),
-				'--text-selected-row': computedStyle.getPropertyValue('--color-graph-text-selected-row'),
-				'--text-hovered': computedStyle.getPropertyValue('--color-graph-text-hovered'),
-				'--text-dimmed-selected': computedStyle.getPropertyValue('--color-graph-text-dimmed-selected'),
-				'--text-dimmed': computedStyle.getPropertyValue('--color-graph-text-dimmed'),
-				'--text-normal': computedStyle.getPropertyValue('--color-graph-text-normal'),
-				'--text-secondary': computedStyle.getPropertyValue('--color-graph-text-secondary'),
-				'--text-disabled': computedStyle.getPropertyValue('--color-graph-text-disabled'),
+				'--scrollable-scrollbar-thickness': getCssVariable('--graph-column-scrollbar-thickness', computedStyle),
+				'--scroll-thumb-bg': getCssVariable('--vscode-scrollbarSlider-background', computedStyle),
 
-				'--text-accent': computedStyle.getPropertyValue('--color-link-foreground'),
-				'--text-inverse': computedStyle.getPropertyValue('--vscode-input-background'),
-				'--text-bright': computedStyle.getPropertyValue('--vscode-input-background'),
+				'--scroll-marker-head-color': getCssVariable('--color-graph-scroll-marker-head', computedStyle),
+				'--scroll-marker-upstream-color': getCssVariable('--color-graph-scroll-marker-upstream', computedStyle),
+				'--scroll-marker-highlights-color': getCssVariable(
+					'--color-graph-scroll-marker-highlights',
+					computedStyle,
+				),
+				'--scroll-marker-local-branches-color': getCssVariable(
+					'--color-graph-scroll-marker-local-branches',
+					computedStyle,
+				),
+				'--scroll-marker-remote-branches-color': getCssVariable(
+					'--color-graph-scroll-marker-remote-branches',
+					computedStyle,
+				),
+				'--scroll-marker-stashes-color': getCssVariable('--color-graph-scroll-marker-stashes', computedStyle),
+				'--scroll-marker-tags-color': getCssVariable('--color-graph-scroll-marker-tags', computedStyle),
+				'--scroll-marker-selection-color': getCssVariable(
+					'--color-graph-scroll-marker-selection',
+					computedStyle,
+				),
+
+				'--stats-added-color': getCssVariable('--color-graph-stats-added', computedStyle),
+				'--stats-deleted-color': getCssVariable('--color-graph-stats-deleted', computedStyle),
+				'--stats-files-color': getCssVariable('--color-graph-stats-files', computedStyle),
+				'--stats-bar-border-radius': getCssVariable('--graph-stats-bar-border-radius', computedStyle),
+				'--stats-bar-height': getCssVariable('--graph-stats-bar-height', computedStyle),
+
+				'--text-selected': getCssVariable('--color-graph-text-selected', computedStyle),
+				'--text-selected-row': getCssVariable('--color-graph-text-selected-row', computedStyle),
+				'--text-hovered': getCssVariable('--color-graph-text-hovered', computedStyle),
+				'--text-dimmed-selected': getCssVariable('--color-graph-text-dimmed-selected', computedStyle),
+				'--text-dimmed': getCssVariable('--color-graph-text-dimmed', computedStyle),
+				'--text-normal': getCssVariable('--color-graph-text-normal', computedStyle),
+				'--text-secondary': getCssVariable('--color-graph-text-secondary', computedStyle),
+				'--text-disabled': getCssVariable('--color-graph-text-disabled', computedStyle),
+
+				'--text-accent': getCssVariable('--color-link-foreground', computedStyle),
+				'--text-inverse': getCssVariable('--vscode-input-background', computedStyle),
+				'--text-bright': getCssVariable('--vscode-input-background', computedStyle),
 				...mixedGraphColors,
 			},
-			themeOpacityFactor: parseInt(computedStyle.getPropertyValue('--graph-theme-opacity-factor')) || 1,
+			themeOpacityFactor: parseInt(getCssVariable('--graph-theme-opacity-factor', computedStyle)) || 1,
 		};
-	}
-
-	private onDismissBanner(key: DismissBannerParams['key']) {
-		this.sendCommand(DismissBannerCommandType, { key: key });
 	}
 
 	private onColumnsChanged(settings: GraphColumnsConfig) {
@@ -552,14 +631,14 @@ export class GraphApp extends App<State> {
 	}
 
 	private onGetMoreRows(sha?: string) {
-		return this.sendCommand(GetMoreRowsCommandType, { id: sha });
+		this.sendCommand(GetMoreRowsCommandType, { id: sha });
 	}
 
 	private onSearch(search: SearchQuery | undefined, options?: { limit?: number }) {
 		if (search == null) {
 			this.state.searchResults = undefined;
 		}
-		return this.sendCommand(SearchCommandType, { search: search, limit: options?.limit });
+		this.sendCommand(SearchCommandType, { search: search, limit: options?.limit });
 	}
 
 	private async onSearchPromise(search: SearchQuery, options?: { limit?: number; more?: boolean }) {
@@ -606,7 +685,7 @@ export class GraphApp extends App<State> {
 	}
 
 	private onSelectionChanged(rows: GraphRow[]) {
-		const selection = rows.map(r => ({ id: r.sha, type: r.type as GitGraphRowType }));
+		const selection = rows.filter(r => r != null).map(r => ({ id: r.sha, type: r.type as GitGraphRowType }));
 		this.sendCommand(UpdateSelectionCommandType, {
 			selection: selection,
 		});

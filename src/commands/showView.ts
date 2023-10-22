@@ -13,6 +13,9 @@ export class ShowViewCommand extends Command {
 			Commands.ShowCommitsView,
 			Commands.ShowContributorsView,
 			Commands.ShowFileHistoryView,
+			Commands.ShowGraphView,
+			Commands.ShowHomeView,
+			Commands.ShowAccountView,
 			Commands.ShowLineHistoryView,
 			Commands.ShowRemotesView,
 			Commands.ShowRepositoriesView,
@@ -21,15 +24,16 @@ export class ShowViewCommand extends Command {
 			Commands.ShowTagsView,
 			Commands.ShowTimelineView,
 			Commands.ShowWorktreesView,
-			Commands.ShowHomeView,
+			Commands.ShowWorkspacesView,
 		]);
 	}
 
-	protected override preExecute(context: CommandContext) {
-		return this.execute(context.command as Commands);
+	protected override preExecute(context: CommandContext, ...args: any[]) {
+		return this.execute(context, ...args);
 	}
 
-	async execute(command: Commands) {
+	async execute(context: CommandContext, ...args: any[]) {
+		const command = context.command as Commands;
 		switch (command) {
 			case Commands.ShowBranchesView:
 				return this.container.branchesView.show();
@@ -43,6 +47,16 @@ export class ShowViewCommand extends Command {
 				return this.container.fileHistoryView.show();
 			case Commands.ShowHomeView:
 				return this.container.homeView.show();
+			case Commands.ShowAccountView:
+				return this.container.accountView.show();
+			case Commands.ShowGraphView: {
+				let commandArgs = args;
+				if (context.type === 'scm' && context.scm?.rootUri != null) {
+					const repo = this.container.git.getRepository(context.scm.rootUri);
+					commandArgs = repo != null ? [repo, ...args] : args;
+				}
+				return this.container.graphView.show(undefined, ...commandArgs);
+			}
 			case Commands.ShowLineHistoryView:
 				return this.container.lineHistoryView.show();
 			case Commands.ShowRemotesView:
@@ -59,6 +73,8 @@ export class ShowViewCommand extends Command {
 				return this.container.timelineView.show();
 			case Commands.ShowWorktreesView:
 				return this.container.worktreesView.show();
+			case Commands.ShowWorkspacesView:
+				return this.container.workspacesView.show();
 		}
 
 		return Promise.resolve(undefined);

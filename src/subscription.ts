@@ -22,12 +22,15 @@ export interface Subscription {
 	previewTrial?: SubscriptionPreviewTrial;
 
 	state: SubscriptionState;
+
+	lastValidatedAt?: number;
 }
 
 export interface SubscriptionPlan {
 	readonly id: SubscriptionPlanId;
 	readonly name: string;
 	readonly bundle: boolean;
+	readonly trialReactivationCount: number;
 	readonly cancelled: boolean;
 	readonly startedOn: string;
 	readonly expiresOn?: string | undefined;
@@ -72,6 +75,7 @@ export function computeSubscriptionState(_subscription: Optional<Subscription, '
 export function getSubscriptionPlan(
 	id: SubscriptionPlanId,
 	bundle: boolean,
+	trialReactivationCount: number,
 	organizationId: string | undefined,
 	startedOn?: Date,
 	expiresOn?: Date,
@@ -83,6 +87,7 @@ export function getSubscriptionPlan(
 		bundle: bundle,
 		cancelled: cancelled,
 		organizationId: organizationId,
+		trialReactivationCount: trialReactivationCount,
 		startedOn: (startedOn ?? new Date()).toISOString(),
 		expiresOn: expiresOn != null ? expiresOn.toISOString() : undefined,
 	};
@@ -91,16 +96,36 @@ export function getSubscriptionPlan(
 export function getSubscriptionPlanName(id: SubscriptionPlanId) {
 	switch (id) {
 		case SubscriptionPlanId.FreePlus:
-			return 'GitLens Free';
+			return 'GitKraken Free';
 		case SubscriptionPlanId.Pro:
-			return 'GitLens Pro';
+			return 'GitKraken Pro';
 		case SubscriptionPlanId.Teams:
-			return 'GitLens Teams';
+			return 'GitKraken Teams';
 		case SubscriptionPlanId.Enterprise:
-			return 'GitLens Enterprise';
+			return 'GitKraken Enterprise';
 		case SubscriptionPlanId.Free:
 		default:
-			return 'GitLens';
+			return 'GitKraken';
+	}
+}
+
+export function getSubscriptionStatePlanName(state: SubscriptionState | undefined, id: SubscriptionPlanId | undefined) {
+	switch (state) {
+		case SubscriptionState.FreePlusTrialExpired:
+			return getSubscriptionPlanName(SubscriptionPlanId.FreePlus);
+		case SubscriptionState.FreeInPreviewTrial:
+			return `${getSubscriptionPlanName(SubscriptionPlanId.Pro)} (Trial)`;
+		case SubscriptionState.FreePlusInTrial:
+			return `${getSubscriptionPlanName(id ?? SubscriptionPlanId.Pro)} (Trial)`;
+		case SubscriptionState.VerificationRequired:
+			return `GitKraken (Unverified)`;
+		case SubscriptionState.Paid:
+			return getSubscriptionPlanName(id ?? SubscriptionPlanId.Pro);
+		case SubscriptionState.Free:
+		case SubscriptionState.FreePreviewTrialExpired:
+		case null:
+		default:
+			return 'GitKraken';
 	}
 }
 
@@ -148,7 +173,43 @@ export function isSubscriptionTrial(subscription: Optional<Subscription, 'state'
 	return subscription.plan.actual.id !== subscription.plan.effective.id;
 }
 
+export function isSubscriptionInProTrial(subscription: Optional<Subscription, 'state'>): boolean {
+	if (
+		subscription.account == null ||
+		!isSubscriptionTrial(subscription) ||
+		isSubscriptionPreviewTrialExpired(subscription) === false
+	) {
+		return false;
+	}
+
+	const remaining = getSubscriptionTimeRemaining(subscription);
+	return remaining != null ? remaining <= 0 : true;
+}
+
 export function isSubscriptionPreviewTrialExpired(subscription: Optional<Subscription, 'state'>): boolean | undefined {
 	const remaining = getTimeRemaining(subscription.previewTrial?.expiresOn);
 	return remaining != null ? remaining <= 0 : undefined;
+}
+
+export function isSubscriptionStatePaidOrTrial(state: SubscriptionState | undefined): boolean {
+	if (state == null) return false;
+	return (
+		state === SubscriptionState.Paid ||
+		state === SubscriptionState.FreeInPreviewTrial ||
+		state === SubscriptionState.FreePlusInTrial
+	);
+}
+
+export function isSubscriptionStateTrial(state: SubscriptionState | undefined): boolean {
+	if (state == null) return false;
+	return state === SubscriptionState.FreeInPreviewTrial || state === SubscriptionState.FreePlusInTrial;
+}
+
+export function hasAccountFromSubscriptionState(state: SubscriptionState | undefined): boolean {
+	if (state == null) return false;
+	return (
+		state !== SubscriptionState.Free &&
+		state !== SubscriptionState.FreePreviewTrialExpired &&
+		state !== SubscriptionState.FreeInPreviewTrial
+	);
 }

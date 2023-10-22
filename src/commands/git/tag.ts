@@ -1,4 +1,3 @@
-import type { QuickPickItem } from 'vscode';
 import { QuickInputButtons } from 'vscode';
 import type { Container } from '../../container';
 import type { GitReference, GitTagReference } from '../../git/models/reference';
@@ -19,7 +18,6 @@ import type {
 	StepState,
 } from '../quickCommand';
 import {
-	appendReposToTitle,
 	canInputStepContinue,
 	canPickStepContinue,
 	canStepContinue,
@@ -27,13 +25,16 @@ import {
 	createInputStep,
 	createPickStep,
 	endSteps,
+	QuickCommand,
+	StepResultBreak,
+} from '../quickCommand';
+import {
+	appendReposToTitle,
 	inputTagNameStep,
 	pickBranchOrTagStep,
 	pickRepositoryStep,
 	pickTagsStep,
-	QuickCommand,
-	StepResultBreak,
-} from '../quickCommand';
+} from '../quickCommand.steps';
 
 interface Context {
 	repos: Repository[];
@@ -169,7 +170,9 @@ export class TagGitCommand extends QuickCommand<State> {
 				skippedStepTwo = false;
 				if (context.repos.length === 1) {
 					skippedStepTwo = true;
-					state.counter++;
+					if (state.repo == null) {
+						state.counter++;
+					}
 
 					state.repo = context.repos[0];
 				} else {
@@ -319,10 +322,7 @@ export class TagGitCommand extends QuickCommand<State> {
 		return value;
 	}
 
-	private *createCommandConfirmStep(
-		state: CreateStepState<CreateState>,
-		context: Context,
-	): StepResultGenerator<CreateFlags[]> {
+	private *createCommandConfirmStep(state: CreateStepState, context: Context): StepResultGenerator<CreateFlags[]> {
 		const step: QuickPickStep<FlagsQuickPickItem<CreateFlags>> = createConfirmStep(
 			appendReposToTitle(`Confirm ${context.title}`, state, context),
 			[
@@ -378,11 +378,8 @@ export class TagGitCommand extends QuickCommand<State> {
 		}
 	}
 
-	private *deleteCommandConfirmStep(
-		state: DeleteStepState<DeleteState>,
-		context: Context,
-	): StepResultGenerator<void> {
-		const step: QuickPickStep<QuickPickItem> = createConfirmStep(
+	private *deleteCommandConfirmStep(state: DeleteStepState, context: Context): StepResultGenerator<void> {
+		const step: QuickPickStep = createConfirmStep(
 			appendReposToTitle(`Confirm ${context.title}`, state, context),
 			[
 				{

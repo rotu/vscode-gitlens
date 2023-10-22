@@ -8,8 +8,8 @@ import type {
 } from 'vscode';
 import { OverviewRulerLane, ThemeColor, Uri, window } from 'vscode';
 import type { Config } from '../config';
-import { HeatmapLocations } from '../config';
-import { Colors, GlyphChars } from '../constants';
+import type { Colors, CoreConfiguration } from '../constants';
+import { GlyphChars } from '../constants';
 import type { CommitFormatOptions } from '../git/formatters/commitFormatter';
 import { CommitFormatter } from '../git/formatters/commitFormatter';
 import type { GitCommit } from '../git/models/commit';
@@ -98,9 +98,9 @@ export function addOrUpdateGutterHeatmapDecoration(
 	const [r, g, b, a] = getHeatmapColor(date, heatmap);
 
 	const { fadeLines, locations } = configuration.get('heatmap');
-	const gutter = locations.includes(HeatmapLocations.Gutter);
-	const line = locations.includes(HeatmapLocations.Line);
-	const scrollbar = locations.includes(HeatmapLocations.Scrollbar);
+	const gutter = locations.includes('gutter');
+	const line = locations.includes('line');
+	const scrollbar = locations.includes('overview');
 
 	const key = `${r},${g},${b},${a}`;
 	let colorDecoration = map.get(key);
@@ -192,7 +192,7 @@ export function getGutterRenderOptions(
 
 	let width;
 	if (chars >= 0) {
-		const spacing = configuration.getAny<number>('editor.letterSpacing');
+		const spacing = configuration.getAny<CoreConfiguration, number>('editor.letterSpacing');
 		if (spacing != null && spacing !== 0) {
 			width = `calc(${chars}ch + ${Math.round(chars * spacing) + (avatars ? 13 : -6)}px)`;
 		} else {
@@ -201,10 +201,10 @@ export function getGutterRenderOptions(
 	}
 
 	return {
-		backgroundColor: new ThemeColor(Colors.GutterBackgroundColor),
+		backgroundColor: new ThemeColor('gitlens.gutterBackgroundColor' satisfies Colors),
 		borderStyle: borderStyle,
 		borderWidth: borderWidth,
-		color: new ThemeColor(Colors.GutterForegroundColor),
+		color: new ThemeColor('gitlens.gutterForegroundColor' satisfies Colors),
 		fontWeight: 'normal',
 		fontStyle: 'normal',
 		height: '100%',
@@ -213,7 +213,7 @@ export function getGutterRenderOptions(
 			avatars ? ';padding: 0 0 0 18px' : ''
 		}`,
 		width: width,
-		uncommittedColor: new ThemeColor(Colors.GutterUncommittedForegroundColor),
+		uncommittedColor: new ThemeColor('gitlens.gutterUncommittedForegroundColor' satisfies Colors),
 	};
 }
 
@@ -240,8 +240,8 @@ export function getInlineDecoration(
 	return {
 		renderOptions: {
 			after: {
-				backgroundColor: new ThemeColor(Colors.TrailingLineBackgroundColor),
-				color: new ThemeColor(Colors.TrailingLineForegroundColor),
+				backgroundColor: new ThemeColor('gitlens.trailingLineBackgroundColor' satisfies Colors),
+				color: new ThemeColor('gitlens.trailingLineForegroundColor' satisfies Colors),
 				contentText: pad(message.replace(/ /g, GlyphChars.Space), 1, 1),
 				fontWeight: 'normal',
 				fontStyle: 'normal',

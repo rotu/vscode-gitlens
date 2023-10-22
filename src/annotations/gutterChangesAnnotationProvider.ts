@@ -7,16 +7,16 @@ import type {
 	TextEditorDecorationType,
 } from 'vscode';
 import { Hover, languages, Position, Range, Selection, TextEditorRevealType } from 'vscode';
-import { FileAnnotationType } from '../config';
 import type { Container } from '../container';
 import type { GitCommit } from '../git/models/commit';
-import type { GitDiff } from '../git/models/diff';
+import type { GitDiffFile } from '../git/models/diff';
 import { localChangesMessage } from '../hovers/hovers';
 import { configuration } from '../system/configuration';
 import { log } from '../system/decorators/log';
 import { getLogScope } from '../system/logger.scope';
-import { Stopwatch } from '../system/stopwatch';
-import type { GitDocumentState, TrackedDocument } from '../trackers/gitDocumentTracker';
+import { maybeStopWatch } from '../system/stopwatch';
+import type { GitDocumentState } from '../trackers/gitDocumentTracker';
+import type { TrackedDocument } from '../trackers/trackedDocument';
 import type { AnnotationContext } from './annotationProvider';
 import { AnnotationProviderBase } from './annotationProvider';
 import { Decorations } from './fileAnnotationController';
@@ -29,7 +29,7 @@ export interface ChangesAnnotationContext extends AnnotationContext {
 }
 
 export class GutterChangesAnnotationProvider extends AnnotationProviderBase<ChangesAnnotationContext> {
-	private state: { commit: GitCommit | undefined; diffs: GitDiff[] } | undefined;
+	private state: { commit: GitCommit | undefined; diffs: GitDiffFile[] } | undefined;
 	private hoverProviderDisposable: Disposable | undefined;
 
 	constructor(
@@ -37,7 +37,7 @@ export class GutterChangesAnnotationProvider extends AnnotationProviderBase<Chan
 		trackedDocument: TrackedDocument<GitDocumentState>,
 		private readonly container: Container,
 	) {
-		super(FileAnnotationType.Changes, editor, trackedDocument);
+		super('changes', editor, trackedDocument);
 	}
 
 	override mustReopen(context?: ChangesAnnotationContext): boolean {
@@ -156,7 +156,7 @@ export class GutterChangesAnnotationProvider extends AnnotationProviderBase<Chan
 		).filter(<T>(d?: T): d is T => Boolean(d));
 		if (!diffs?.length) return false;
 
-		const sw = new Stopwatch(scope);
+		using sw = maybeStopWatch(scope);
 
 		const decorationsMap = new Map<
 			string,
@@ -259,12 +259,12 @@ export class GutterChangesAnnotationProvider extends AnnotationProviderBase<Chan
 			}
 		}
 
-		sw.restart({ suffix: ' to compute recent changes annotations' });
+		sw?.restart({ suffix: ' to compute recent changes annotations' });
 
 		if (decorationsMap.size) {
 			this.setDecorations([...decorationsMap.values()]);
 
-			sw.stop({ suffix: ' to apply all recent changes annotations' });
+			sw?.stop({ suffix: ' to apply all recent changes annotations' });
 
 			if (selection != null && context?.selection !== false) {
 				this.editor.selection = selection;

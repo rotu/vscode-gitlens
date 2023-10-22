@@ -1,7 +1,8 @@
-import type { Range } from 'vscode';
-import { env, Uri } from 'vscode';
+import type { Range, Uri } from 'vscode';
+import { env } from 'vscode';
 import type { DynamicAutolinkReference } from '../../annotations/autolinks';
 import type { AutolinkReference } from '../../config';
+import { memoize } from '../../system/decorators/memoize';
 import { encodeUrl } from '../../system/encoding';
 import type { RemoteProviderReference } from '../models/remoteProvider';
 import type { RemoteResource } from '../models/remoteResource';
@@ -23,6 +24,11 @@ export abstract class RemoteProvider implements RemoteProviderReference {
 		this._name = name;
 	}
 
+	@memoize()
+	get remoteKey() {
+		return this.domain ? `${this.domain}/${this.path}` : this.path;
+	}
+
 	get autolinks(): (AutolinkReference | DynamicAutolinkReference)[] {
 		return [];
 	}
@@ -39,6 +45,10 @@ export abstract class RemoteProvider implements RemoteProviderReference {
 		return 'remote';
 	}
 
+	get owner(): string | undefined {
+		return this.path.split('/')[0];
+	}
+
 	abstract get id(): string;
 	abstract get name(): string;
 
@@ -53,6 +63,10 @@ export abstract class RemoteProvider implements RemoteProviderReference {
 
 	hasRichIntegration(): this is RichRemoteProvider {
 		return this.type === 'rich';
+	}
+
+	get maybeConnected(): boolean | undefined {
+		return false;
 	}
 
 	abstract getLocalInfoFromRemoteUri(
@@ -139,17 +153,11 @@ export abstract class RemoteProvider implements RemoteProviderReference {
 	}
 
 	private async openUrl(url?: string): Promise<boolean | undefined> {
-		if (url == null) {
-			return undefined;
-		}
+		if (url == null) return undefined;
 
-		const uri = Uri.parse(url);
 		// Pass a string to openExternal to avoid double encoding issues: https://github.com/microsoft/vscode/issues/85930
-		if (uri.path.includes('#')) {
-			// .d.ts currently says it only supports a Uri, but it actually accepts a string too
-			return (env.openExternal as unknown as (target: string) => Thenable<boolean>)(uri.toString());
-		}
-		return env.openExternal(uri);
+		// vscode.d.ts currently says it only supports a Uri, but it actually accepts a string too
+		return (env.openExternal as unknown as (target: string) => Thenable<boolean>)(url);
 	}
 
 	protected encodeUrl(url: string): string;

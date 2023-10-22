@@ -1,13 +1,6 @@
-import type {
-	CancellationToken,
-	ConfigurationChangeEvent,
-	Disposable,
-	TreeViewSelectionChangeEvent,
-	TreeViewVisibilityChangeEvent,
-} from 'vscode';
+import type { CancellationToken, ConfigurationChangeEvent, Disposable } from 'vscode';
 import { ProgressLocation, TreeItem, TreeItemCollapsibleState, window } from 'vscode';
-import type { StashesViewConfig } from '../config';
-import { ViewFilesLayout } from '../config';
+import type { StashesViewConfig, ViewFilesLayout } from '../config';
 import { Commands } from '../constants';
 import type { Container } from '../container';
 import { GitUri } from '../git/gitUri';
@@ -18,10 +11,7 @@ import { RepositoryChange, RepositoryChangeComparisonMode } from '../git/models/
 import { executeCommand } from '../system/command';
 import { configuration } from '../system/configuration';
 import { gate } from '../system/decorators/gate';
-import { RepositoryNode } from './nodes/repositoryNode';
 import { StashesNode } from './nodes/stashesNode';
-import { StashFileNode } from './nodes/stashFileNode';
-import { StashNode } from './nodes/stashNode';
 import type { ViewNode } from './nodes/viewNode';
 import { RepositoriesSubscribeableNode, RepositoryFolderNode } from './nodes/viewNode';
 import { ViewBase } from './viewBase';
@@ -89,11 +79,11 @@ export class StashesViewNode extends RepositoriesSubscribeableNode<StashesView, 
 	}
 }
 
-export class StashesView extends ViewBase<StashesViewNode, StashesViewConfig> {
+export class StashesView extends ViewBase<'stashes', StashesViewNode, StashesViewConfig> {
 	protected readonly configKey = 'stashes';
 
 	constructor(container: Container) {
-		super(container, 'gitlens.views.stashes', 'Stashes', 'stashesView');
+		super(container, 'stashes', 'Stashes', 'stashesView');
 	}
 
 	override get canReveal(): boolean {
@@ -123,17 +113,17 @@ export class StashesView extends ViewBase<StashesViewNode, StashesViewConfig> {
 			),
 			registerViewCommand(
 				this.getQualifiedCommand('setFilesLayoutToAuto'),
-				() => this.setFilesLayout(ViewFilesLayout.Auto),
+				() => this.setFilesLayout('auto'),
 				this,
 			),
 			registerViewCommand(
 				this.getQualifiedCommand('setFilesLayoutToList'),
-				() => this.setFilesLayout(ViewFilesLayout.List),
+				() => this.setFilesLayout('list'),
 				this,
 			),
 			registerViewCommand(
 				this.getQualifiedCommand('setFilesLayoutToTree'),
-				() => this.setFilesLayout(ViewFilesLayout.Tree),
+				() => this.setFilesLayout('tree'),
 				this,
 			),
 		];
@@ -157,58 +147,16 @@ export class StashesView extends ViewBase<StashesViewNode, StashesViewConfig> {
 		return true;
 	}
 
-	protected override onSelectionChanged(e: TreeViewSelectionChangeEvent<ViewNode>) {
-		super.onSelectionChanged(e);
-		this.notifySelections();
-	}
-
-	protected override onVisibilityChanged(e: TreeViewVisibilityChangeEvent) {
-		super.onVisibilityChanged(e);
-		if (e.visible) {
-			this.notifySelections();
-		}
-	}
-
-	private notifySelections() {
-		const node = this.selection?.[0];
-		if (node == null) return;
-
-		if (node instanceof StashNode || node instanceof StashFileNode) {
-			this.container.events.fire(
-				'commit:selected',
-				{
-					commit: node.commit,
-					pin: false,
-					preserveFocus: true,
-					preserveVisibility: true,
-				},
-				{ source: this.id },
-			);
-		}
-
-		if (node instanceof StashFileNode) {
-			this.container.events.fire(
-				'file:selected',
-				{
-					uri: node.uri,
-					preserveFocus: true,
-					preserveVisibility: true,
-				},
-				{ source: this.id },
-			);
-		}
-	}
-
 	findStash(stash: GitStashReference, token?: CancellationToken) {
-		const repoNodeId = RepositoryNode.getId(stash.repoPath);
+		const { repoPath } = stash;
 
-		return this.findNode(StashNode.getId(stash.repoPath, stash.ref), {
+		return this.findNode((n: any) => n.commit?.ref === stash.ref, {
 			maxDepth: 2,
 			canTraverse: n => {
 				if (n instanceof StashesViewNode) return true;
 
 				if (n instanceof StashesRepositoryNode) {
-					return n.id.startsWith(repoNodeId);
+					return n.repoPath === repoPath;
 				}
 
 				return false;
@@ -222,7 +170,7 @@ export class StashesView extends ViewBase<StashesViewNode, StashesViewConfig> {
 		repoPath: string,
 		options?: { select?: boolean; focus?: boolean; expand?: boolean | number },
 	) {
-		const node = await this.findNode(RepositoryFolderNode.getId(repoPath), {
+		const node = await this.findNode(n => n instanceof RepositoryFolderNode && n.repoPath === repoPath, {
 			maxDepth: 1,
 			canTraverse: n => n instanceof StashesViewNode || n instanceof RepositoryFolderNode,
 		});

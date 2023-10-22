@@ -1,6 +1,6 @@
 import type { Config } from '../config';
-import type { ConfigPath, ConfigPathValue } from '../system/configuration';
-import type { CustomConfigPath, CustomConfigPathValue } from './webviewWithConfigBase';
+import type { CustomEditorIds, WebviewIds, WebviewViewIds } from '../constants';
+import type { ConfigPath, ConfigPathValue, Path, PathValue } from '../system/configuration';
 
 export interface IpcMessage {
 	id: string;
@@ -11,7 +11,10 @@ export interface IpcMessage {
 
 abstract class IpcMessageType<Params = void> {
 	_?: Params; // Required for type inferencing to work properly
-	constructor(public readonly method: string, public readonly overwriteable: boolean = false) {}
+	constructor(
+		public readonly method: string,
+		public readonly reset: boolean = false,
+	) {}
 }
 export type IpcMessageParams<T> = T extends IpcMessageType<infer P> ? P : never;
 
@@ -65,7 +68,7 @@ export interface UpdateConfigurationParams {
 	changes: {
 		[key in ConfigPath | CustomConfigPath]?: ConfigPathValue<ConfigPath> | CustomConfigPathValue<CustomConfigPath>;
 	};
-	removes: string[];
+	removes: (keyof { [key in ConfigPath | CustomConfigPath]?: ConfigPathValue<ConfigPath> })[];
 	scope?: 'user' | 'workspace';
 	uri?: string;
 }
@@ -93,3 +96,37 @@ export interface DidOpenAnchorParams {
 	scrollBehavior: 'auto' | 'smooth';
 }
 export const DidOpenAnchorNotificationType = new IpcNotificationType<DidOpenAnchorParams>('webview/didOpenAnchor');
+
+interface CustomConfig {
+	rebaseEditor: {
+		enabled: boolean;
+	};
+	currentLine: {
+		useUncommittedChangesFormat: boolean;
+	};
+}
+
+export type CustomConfigPath = Path<CustomConfig>;
+export type CustomConfigPathValue<P extends CustomConfigPath> = PathValue<CustomConfig, P>;
+
+const customConfigKeys: readonly CustomConfigPath[] = [
+	'rebaseEditor.enabled',
+	'currentLine.useUncommittedChangesFormat',
+];
+
+export function isCustomConfigKey(key: string): key is CustomConfigPath {
+	return customConfigKeys.includes(key as CustomConfigPath);
+}
+
+export function assertsConfigKeyValue<T extends ConfigPath>(
+	key: T,
+	value: unknown,
+): asserts value is ConfigPathValue<T> {
+	// Noop
+}
+
+export interface WebviewState<Id extends WebviewIds | WebviewViewIds | CustomEditorIds = WebviewIds | WebviewViewIds> {
+	webviewId: Id;
+	webviewInstanceId: string | undefined;
+	timestamp: number;
+}

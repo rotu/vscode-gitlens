@@ -1,5 +1,4 @@
 import { ThemeIcon, TreeItem, TreeItemCollapsibleState, Uri } from 'vscode';
-import { ViewBranchesLayout } from '../../config';
 import { GlyphChars } from '../../constants';
 import { GitUri } from '../../git/gitUri';
 import type { GitRemote } from '../../git/models/remote';
@@ -7,36 +6,36 @@ import { getRemoteUpstreamDescription } from '../../git/models/remote';
 import type { Repository } from '../../git/models/repository';
 import { makeHierarchical } from '../../system/array';
 import { log } from '../../system/decorators/log';
-import type { RemotesView } from '../remotesView';
-import type { RepositoriesView } from '../repositoriesView';
+import type { ViewsWithRemotes } from '../viewBase';
 import { BranchNode } from './branchNode';
 import { BranchOrTagFolderNode } from './branchOrTagFolderNode';
 import { MessageNode } from './common';
-import { RepositoryNode } from './repositoryNode';
-import { ContextValues, ViewNode } from './viewNode';
+import { ContextValues, getViewNodeId, ViewNode } from './viewNode';
 
-export class RemoteNode extends ViewNode<RemotesView | RepositoriesView> {
-	static key = ':remote';
-	static getId(repoPath: string, name: string, id: string): string {
-		return `${RepositoryNode.getId(repoPath)}${this.key}(${name}|${id})`;
-	}
-
+export class RemoteNode extends ViewNode<'remote', ViewsWithRemotes> {
 	constructor(
 		uri: GitUri,
-		view: RemotesView | RepositoriesView,
-		parent: ViewNode,
-		public readonly remote: GitRemote,
+		view: ViewsWithRemotes,
+		protected override readonly parent: ViewNode,
 		public readonly repo: Repository,
+		public readonly remote: GitRemote,
 	) {
-		super(uri, view, parent);
+		super('remote', uri, view, parent);
+
+		this.updateContext({ repository: repo, remote: remote });
+		this._uniqueId = getViewNodeId(this.type, this.context);
+	}
+
+	override get id(): string {
+		return this._uniqueId;
 	}
 
 	override toClipboard(): string {
 		return this.remote.name;
 	}
 
-	override get id(): string {
-		return RemoteNode.getId(this.remote.repoPath, this.remote.name, this.remote.id);
+	get repoPath(): string {
+		return this.repo.path;
 	}
 
 	async getChildren(): Promise<ViewNode[]> {
@@ -50,12 +49,12 @@ export class RemoteNode extends ViewNode<RemotesView | RepositoriesView> {
 		// TODO@eamodio handle paging
 		const branchNodes = branches.values.map(
 			b =>
-				new BranchNode(GitUri.fromRepoPath(this.uri.repoPath!, b.ref), this.view, this, b, false, {
+				new BranchNode(GitUri.fromRepoPath(this.uri.repoPath!, b.ref), this.view, this, this.repo, b, false, {
 					showComparison: false,
 					showTracking: false,
 				}),
 		);
-		if (this.view.config.branches.layout === ViewBranchesLayout.List) return branchNodes;
+		if (this.view.config.branches.layout === 'list') return branchNodes;
 
 		const hierarchy = makeHierarchical(
 			branchNodes,
@@ -72,11 +71,10 @@ export class RemoteNode extends ViewNode<RemotesView | RepositoriesView> {
 			this.view,
 			this,
 			'remote-branch',
+			hierarchy,
 			this.repo.path,
 			'',
 			undefined,
-			hierarchy,
-			`remote(${this.remote.name})`,
 		);
 		const children = root.getChildren();
 		return children;

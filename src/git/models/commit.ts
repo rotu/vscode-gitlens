@@ -1,19 +1,18 @@
 import { Uri } from 'vscode';
+import type { EnrichedAutolink } from '../../annotations/autolinks';
 import { getAvatarUri, getCachedAvatarUri } from '../../avatars';
 import type { GravatarDefaultStyle } from '../../config';
-import { DateSource, DateStyle } from '../../config';
 import { GlyphChars } from '../../constants';
 import type { Container } from '../../container';
 import { formatDate, fromNow } from '../../system/date';
 import { gate } from '../../system/decorators/gate';
 import { memoize } from '../../system/decorators/memoize';
 import { getLoggableName } from '../../system/logger';
-import { cancellable } from '../../system/promise';
 import { pad, pluralize } from '../../system/string';
 import type { PreviousLineComparisonUrisResult } from '../gitProvider';
 import { GitUri } from '../gitUri';
-import type { RichRemoteProvider } from '../remotes/richRemoteProvider';
-import { uncommitted } from './constants';
+import type { RemoteProvider } from '../remotes/remoteProvider';
+import { uncommitted, uncommittedStaged } from './constants';
 import type { GitFile } from './file';
 import { GitFileChange, GitFileWorkingTreeStatus } from './file';
 import type { PullRequest } from './pullRequest';
@@ -54,8 +53,8 @@ export class GitCommit implements GitRevisionReference {
 		stashName?: string | undefined,
 		stashOnRef?: string | undefined,
 	) {
-		this.ref = this.sha;
-		this.shortSha = this.sha.substring(0, this.container.CommitShaFormatting.length);
+		this.ref = sha;
+		this.shortSha = sha.substring(0, this.container.CommitShaFormatting.length);
 		this.tips = tips;
 
 		if (stashName) {
@@ -75,6 +74,9 @@ export class GitCommit implements GitRevisionReference {
 			} else {
 				this._summary = summary;
 			}
+		} else if (isUncommitted(sha, true)) {
+			this._summary = summary;
+			this._message = 'Uncommitted Changes';
 		} else {
 			this._summary = `${summary} ${GlyphChars.Ellipsis}`;
 		}
@@ -118,9 +120,7 @@ export class GitCommit implements GitRevisionReference {
 	}
 
 	get date(): Date {
-		return this.container.CommitDateFormatting.dateSource === DateSource.Committed
-			? this.committer.date
-			: this.author.date;
+		return this.container.CommitDateFormatting.dateSource === 'committed' ? this.committer.date : this.author.date;
 	}
 
 	private _file: GitFileChange | undefined;
@@ -134,7 +134,7 @@ export class GitCommit implements GitRevisionReference {
 	}
 
 	get formattedDate(): string {
-		return this.container.CommitDateFormatting.dateStyle === DateStyle.Absolute
+		return this.container.CommitDateFormatting.dateStyle === 'absolute'
 			? this.formatDate(this.container.CommitDateFormatting.dateFormat)
 			: this.formatDateFromNow();
 	}
@@ -183,7 +183,7 @@ export class GitCommit implements GitRevisionReference {
 
 	private _etagFileSystem: number | undefined;
 
-	hasFullDetails(): this is GitCommit & SomeNonNullable<GitCommit, 'message' | 'files'> {
+	hasFullDetails(): this is GitCommitWithFullDetails {
 		return (
 			this.message != null &&
 			this.files != null &&
@@ -195,29 +195,19 @@ export class GitCommit implements GitRevisionReference {
 		);
 	}
 
-	assertsFullDetails(): asserts this is GitCommit & SomeNonNullable<GitCommit, 'message' | 'files'> {
-		if (!this.hasFullDetails()) {
-			throw new Error(`GitCommit(${this.sha}) is not fully loaded`);
-		}
-	}
-
 	@gate()
 	async ensureFullDetails(): Promise<void> {
 		if (this.hasFullDetails()) return;
 
 		// If the commit is "uncommitted", then have the files list be all uncommitted files
 		if (this.isUncommitted) {
-			this._message = 'Uncommitted Changes';
-
 			const repository = this.container.git.getRepository(this.repoPath);
 			this._etagFileSystem = repository?.etagFileSystem;
 
 			if (this._etagFileSystem != null) {
 				const status = await this.container.git.getStatusForRepo(this.repoPath);
 				if (status != null) {
-					this._files = status.files.map(
-						f => new GitFileChange(this.repoPath, f.path, f.status, f.originalPath),
-					);
+					this._files = status.files.flatMap(f => f.getPseudoFileChanges());
 				}
 				this._etagFileSystem = repository?.etagFileSystem;
 			}
@@ -328,26 +318,29 @@ export class GitCommit implements GitRevisionReference {
 		this._stats = { ...this._stats, changedFiles: changedFiles, additions: additions, deletions: deletions };
 	}
 
-	async findFile(path: string): Promise<GitFileChange | undefined>;
-	async findFile(uri: Uri): Promise<GitFileChange | undefined>;
-	async findFile(pathOrUri: string | Uri): Promise<GitFileChange | undefined> {
+	async findFile(path: string, staged?: boolean): Promise<GitFileChange | undefined>;
+	async findFile(uri: Uri, staged?: boolean): Promise<GitFileChange | undefined>;
+	async findFile(pathOrUri: string | Uri, staged?: boolean): Promise<GitFileChange | undefined> {
 		if (!this.hasFullDetails()) {
 			await this.ensureFullDetails();
 			if (this._files == null) return undefined;
 		}
 
 		const relativePath = this.container.git.getRelativePath(pathOrUri, this.repoPath);
+		if (this.isUncommitted && staged != null) {
+			return this._files?.find(f => f.path === relativePath && f.staged === staged);
+		}
 		return this._files?.find(f => f.path === relativePath);
 	}
 
 	formatDate(format?: string | null) {
-		return this.container.CommitDateFormatting.dateSource === DateSource.Committed
+		return this.container.CommitDateFormatting.dateSource === 'committed'
 			? this.committer.formatDate(format)
 			: this.author.formatDate(format);
 	}
 
 	formatDateFromNow(short?: boolean) {
-		return this.container.CommitDateFormatting.dateSource === DateSource.Committed
+		return this.container.CommitDateFormatting.dateSource === 'committed'
 			? this.committer.fromNow(short)
 			: this.author.fromNow(short);
 	}
@@ -422,23 +415,30 @@ export class GitCommit implements GitRevisionReference {
 		return status;
 	}
 
-	private _pullRequest: Promise<PullRequest | undefined> | undefined;
-	async getAssociatedPullRequest(options?: {
-		remote?: GitRemote<RichRemoteProvider>;
-		timeout?: number;
-	}): Promise<PullRequest | undefined> {
-		if (this._pullRequest == null) {
-			async function getCore(this: GitCommit): Promise<PullRequest | undefined> {
-				const remote =
-					options?.remote ?? (await this.container.git.getBestRemoteWithRichProvider(this.repoPath));
-				if (remote?.provider == null) return undefined;
+	async getAssociatedPullRequest(remote?: GitRemote<RemoteProvider>): Promise<PullRequest | undefined> {
+		remote ??= await this.container.git.getBestRemoteWithRichProvider(this.repoPath);
+		return remote?.hasRichIntegration() ? remote.provider.getPullRequestForCommit(this.ref) : undefined;
+	}
 
-				return this.container.git.getPullRequestForCommit(this.ref, remote, options);
-			}
-			this._pullRequest = getCore.call(this);
+	async getEnrichedAutolinks(remote?: GitRemote<RemoteProvider>): Promise<Map<string, EnrichedAutolink> | undefined> {
+		if (this.isUncommitted) return undefined;
+
+		remote ??= await this.container.git.getBestRemoteWithRichProvider(this.repoPath);
+		if (!remote?.hasRichIntegration()) return undefined;
+
+		// TODO@eamodio should we cache these? Seems like we would use more memory than it's worth
+		// async function getCore(this: GitCommit): Promise<Map<string, EnrichedAutolink> | undefined> {
+		if (this.message == null) {
+			await this.ensureFullDetails();
 		}
 
-		return cancellable(this._pullRequest, options?.timeout);
+		return this.container.autolinks.getEnrichedAutolinks(this.message ?? this.summary, remote);
+		// }
+
+		// const enriched = this.container.cache.getEnrichedAutolinks(this.sha, remote, () => ({
+		// 	value: getCore.call(this),
+		// }));
+		// return enriched;
 	}
 
 	getAvatarUri(options?: { defaultStyle?: GravatarDefaultStyle; size?: number }): Uri | Promise<Uri> {
@@ -449,12 +449,12 @@ export class GitCommit implements GitRevisionReference {
 		return this.author.getCachedAvatarUri(options);
 	}
 
-	async getCommitForFile(file: string | GitFile): Promise<GitCommit | undefined> {
+	async getCommitForFile(file: string | GitFile, staged?: boolean): Promise<GitCommit | undefined> {
 		const path = typeof file === 'string' ? this.container.git.getRelativePath(file, this.repoPath) : file.path;
-		const foundFile = await this.findFile(path);
+		const foundFile = await this.findFile(path, staged);
 		if (foundFile == null) return undefined;
 
-		const commit = this.with({ files: { file: foundFile } });
+		const commit = this.with({ sha: foundFile.staged ? uncommittedStaged : this.sha, files: { file: foundFile } });
 		return commit;
 	}
 
@@ -663,4 +663,12 @@ export interface GitStashCommit extends GitCommit {
 	readonly refType: GitStashReference['refType'];
 	readonly stashName: string;
 	readonly number: string;
+}
+
+type GitCommitWithFullDetails = GitCommit & SomeNonNullable<GitCommit, 'message' | 'files'>;
+
+export function assertsCommitHasFullDetails(commit: GitCommit): asserts commit is GitCommitWithFullDetails {
+	if (!commit.hasFullDetails()) {
+		throw new Error(`GitCommit(${commit.sha}) is not fully loaded`);
+	}
 }

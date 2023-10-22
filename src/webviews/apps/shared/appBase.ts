@@ -1,7 +1,7 @@
 /*global window document*/
+import type { CustomEditorIds, WebviewIds, WebviewViewIds } from '../../../constants';
 import { debounce } from '../../../system/function';
 import { Logger } from '../../../system/logger';
-import { LogLevel } from '../../../system/logger.constants';
 import type {
 	IpcCommandType,
 	IpcMessage,
@@ -13,7 +13,7 @@ import { onIpc, WebviewFocusChangedCommandType, WebviewReadyCommandType } from '
 import { DOM } from './dom';
 import type { Disposable } from './events';
 import type { ThemeChangeEvent } from './theme';
-import { initializeAndWatchThemeColors, onDidChangeTheme } from './theme';
+import { computeThemeColors, onDidChangeTheme, watchThemeColors } from './theme';
 
 declare const DEBUG: boolean;
 
@@ -38,13 +38,29 @@ function nextIpcId() {
 	return `webview:${ipcSequence}`;
 }
 
-export abstract class App<State = undefined> {
+export abstract class App<
+	State extends { webviewId: CustomEditorIds | WebviewIds | WebviewViewIds; timestamp: number } = {
+		webviewId: CustomEditorIds | WebviewIds | WebviewViewIds;
+		timestamp: number;
+	},
+> {
 	private readonly _api: VsCodeApi;
 	protected state: State;
+	protected readonly placement: 'editor' | 'view';
 
 	constructor(protected readonly appName: string) {
+		const disposables: Disposable[] = [];
+
+		const themeEvent = computeThemeColors();
+		if (this.onThemeUpdated != null) {
+			this.onThemeUpdated(themeEvent);
+			disposables.push(onDidChangeTheme(this.onThemeUpdated, this));
+		}
+
 		this.state = (window as any).bootstrap;
 		(window as any).bootstrap = undefined;
+
+		this.placement = (document.body.getAttribute('data-placement') ?? 'editor') as 'editor' | 'view';
 
 		Logger.configure(
 			{
@@ -58,20 +74,23 @@ export abstract class App<State = undefined> {
 					};
 				},
 			},
-			DEBUG ? LogLevel.Debug : LogLevel.Off,
+			DEBUG ? 'debug' : 'off',
 		);
 
 		this.log(`ctor()`);
 		// this.log(`ctor(${this.state ? JSON.stringify(this.state) : ''})`);
 
 		this._api = acquireVsCodeApi();
-
-		const disposables: Disposable[] = [];
-
-		if (this.onThemeUpdated != null) {
-			disposables.push(onDidChangeTheme(this.onThemeUpdated, this));
+		if (this.state != null) {
+			const state = this.getState();
+			if (this.state.timestamp >= (state?.timestamp ?? 0)) {
+				this._api.setState(this.state);
+			} else {
+				this.state = state!;
+			}
 		}
-		disposables.push(initializeAndWatchThemeColors());
+
+		disposables.push(watchThemeColors());
 
 		requestAnimationFrame(() => {
 			this.log(`ctor(): initializing...`);
@@ -151,8 +170,8 @@ export abstract class App<State = undefined> {
 		Logger.log(message, ...optionalParams);
 	}
 
-	protected getState(): State {
-		return this._api.getState() as State;
+	protected getState(): State | undefined {
+		return this._api.getState() as State | undefined;
 	}
 
 	protected sendCommand<TCommand extends IpcCommandType<any>>(
@@ -210,10 +229,7 @@ export abstract class App<State = undefined> {
 		return promise;
 	}
 
-	protected setState(state: State) {
-		this.state = state;
-		if (state == null) return;
-
+	protected setState(state: Partial<State>) {
 		this._api.setState(state);
 	}
 

@@ -1,5 +1,5 @@
 import { css, customElement, FASTElement, html, observable, volatile, when } from '@microsoft/fast-element';
-import type { PullRequestShape } from '../../../../../git/models/pullRequest';
+import type { PullRequestMember, PullRequestShape } from '../../../../../git/models/pullRequest';
 import { fromNow } from '../../../../../system/date';
 import { focusOutline, srOnly } from '../../../shared/components/styles/a11y';
 import { elementBase } from '../../../shared/components/styles/base';
@@ -14,11 +14,11 @@ const template = html<PullRequestRow>`
 	<template role="row">
 		<table-cell class="status">
 			${when(
-				x => x.pullRequest!.isDraft === true,
+				x => x.pullRequest?.isDraft === true,
 				html`<code-icon icon="git-pull-request-draft" title="draft"></code-icon>`,
 			)}
 			${when(
-				x => x.pullRequest!.isDraft !== true,
+				x => x.pullRequest?.isDraft !== true,
 				html`<code-icon class="pull-request-draft" icon="git-pull-request" title="open"></code-icon>`,
 			)}
 			${when(
@@ -77,25 +77,43 @@ const template = html<PullRequestRow>`
 				)}
 			</small>
 		</table-cell>
-		<table-cell>
-			<avatar-stack>
-				<avatar-item
-					media="${x => x.pullRequest!.author?.avatarUrl}"
-					title="${x => x.pullRequest!.author?.name}"
-				></avatar-item>
-			</avatar-stack>
+		<table-cell class="vcenter participants">
+			${when(
+				x => x.pullRequest!.author != null,
+				html<PullRequestRow>`
+					<avatar-stack>
+						<avatar-item
+							media="${x => x.pullRequest!.author.avatarUrl}"
+							title="${x => x.pullRequest!.author.name} (author)"
+						></avatar-item>
+					</avatar-stack>
+				`,
+			)}
+			${when(
+				x => x.assignees.length > 0,
+				html<PullRequestRow>`<git-avatars :avatars="${x => x.pullRequest!.assignees}"></git-avatars>`,
+			)}
 		</table-cell>
-		<table-cell>
-			<git-avatars :avatars="${x => x.pullRequest!.assignees}"></git-avatars>
-		</table-cell>
-		<table-cell>${x => x.pullRequest!.comments}</table-cell>
-		<table-cell class="stats"
+		<table-cell class="vcenter">${x => x.pullRequest!.comments}</table-cell>
+		<table-cell class="vcenter stats"
 			><span class="stat-added">+${x => x.pullRequest!.additions}</span>
 			<span class="stat-deleted">-${x => x.pullRequest!.deletions}</span></table-cell
 		>
-		<table-cell class="actions">
-			<a href="${x => x.pullRequest!.url}" title="Open pull request on remote"
-				><code-icon icon="globe"></code-icon
+		<table-cell class="vcenter actions">
+			<a
+				href="#"
+				tabindex="${x => (x.isCurrentWorktree || x.isCurrentBranch ? -1 : null)}"
+				title="${x => (x.isCurrentWorktree ? 'Already on this workree' : 'Open Worktree...')}"
+				aria-label="${x => (x.isCurrentWorktree ? 'Already on this workree' : 'Open Worktree...')}"
+				@click="${(x, c) => x.onOpenWorktreeClick(c.event)}"
+				><code-icon icon="gl-worktrees-view"></code-icon></a
+			><a
+				href="#"
+				tabindex="${x => (x.hasWorktree || x.isCurrentBranch ? -1 : null)}"
+				title="${x => (x.isCurrentBranch ? 'Already on this branch' : 'Switch to Branch...')}"
+				aria-label="${x => (x.isCurrentBranch ? 'Already on this branch' : 'Switch to Branch...')}"
+				@click="${(x, c) => x.onSwitchBranchClick(c.event)}"
+				><code-icon icon="gl-switch"></code-icon
 			></a>
 		</table-cell>
 	</template>
@@ -130,6 +148,10 @@ const styles = css`
 		font-size: inherit;
 	}
 
+	.vcenter {
+		vertical-align: middle;
+	}
+
 	.tag {
 		display: inline-block;
 		padding: 0.1rem 0.2rem;
@@ -151,11 +173,50 @@ const styles = css`
 	.icon-only {
 	}
 
+	.participants {
+		white-space: nowrap;
+	}
+
 	.stats {
 	}
 
 	.actions {
 		text-align: right;
+		white-space: nowrap;
+		width: 6.4rem;
+	}
+
+	.actions a {
+		box-sizing: border-box;
+		display: inline-flex;
+		justify-content: center;
+		align-items: center;
+		width: 3.2rem;
+		height: 3.2rem;
+		border-radius: 0.5rem;
+		color: inherit;
+		padding: 0.2rem;
+		vertical-align: text-bottom;
+		text-decoration: none;
+		cursor: pointer;
+	}
+	.actions a:focus {
+		outline: 1px solid var(--vscode-focusBorder);
+		outline-offset: -1px;
+	}
+	.actions a:hover {
+		background-color: var(--vscode-toolbar-hoverBackground);
+	}
+	.actions a:active {
+		background-color: var(--vscode-toolbar-activeBackground);
+	}
+	.actions a[tabindex='-1'] {
+		opacity: 0.5;
+		cursor: default;
+	}
+
+	.actions a code-icon {
+		font-size: 1.6rem;
 	}
 
 	.stat-added {
@@ -220,29 +281,50 @@ export class PullRequestRow extends FASTElement {
 	@observable
 	public checks?: boolean;
 
+	@observable
+	public isCurrentBranch = false;
+
+	@observable
+	public isCurrentWorktree = false;
+
+	@observable
+	public hasWorktree = false;
+
+	@observable
+	public hasLocalBranch = false;
+
 	@volatile
 	get lastUpdatedDate() {
-		return new Date(this.pullRequest!.date);
+		return this.pullRequest ? new Date(this.pullRequest.date) : undefined;
 	}
 
 	@volatile
 	get lastUpdatedState() {
+		if (!this.lastUpdatedDate) {
+			return;
+		}
 		return fromDateRange(this.lastUpdatedDate);
 	}
 
 	@volatile
 	get lastUpdated() {
+		if (!this.lastUpdatedDate) {
+			return;
+		}
 		return fromNow(this.lastUpdatedDate, true);
 	}
 
 	@volatile
 	get lastUpdatedLabel() {
+		if (!this.lastUpdatedDate) {
+			return;
+		}
 		return fromNow(this.lastUpdatedDate);
 	}
 
 	@volatile
 	get lastUpdatedClass() {
-		switch (this.lastUpdatedState.status) {
+		switch (this.lastUpdatedState?.status) {
 			case 'danger':
 				return 'indicator-error';
 			case 'warning':
@@ -256,7 +338,6 @@ export class PullRequestRow extends FASTElement {
 	get indicator() {
 		if (this.pullRequest == null) return '';
 
-		console.log(this.pullRequest);
 		if (this.checks === false) {
 			return 'checks';
 		} else if (this.pullRequest.reviewDecision === 'ChangesRequested') {
@@ -275,5 +356,37 @@ export class PullRequestRow extends FASTElement {
 	@volatile
 	get indicatorLabel() {
 		return undefined;
+	}
+
+	@volatile
+	get assignees() {
+		const assignees = this.pullRequest?.assignees;
+		if (assignees == null) {
+			return [];
+		}
+		const author: PullRequestMember | undefined = this.pullRequest!.author;
+		if (author != null) {
+			return assignees.filter(assignee => assignee.name !== author.name);
+		}
+
+		return assignees;
+	}
+
+	onOpenWorktreeClick(e: Event) {
+		if (this.isCurrentWorktree) {
+			e.preventDefault();
+			e.stopImmediatePropagation();
+			return;
+		}
+		this.$emit('open-worktree', this.pullRequest!);
+	}
+
+	onSwitchBranchClick(e: Event) {
+		if (this.isCurrentBranch) {
+			e.preventDefault();
+			e.stopImmediatePropagation();
+			return;
+		}
+		this.$emit('switch-branch', this.pullRequest!);
 	}
 }

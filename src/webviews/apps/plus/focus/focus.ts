@@ -1,27 +1,24 @@
-import { provideVSCodeDesignSystem, vsCodeButton } from '@vscode/webview-ui-toolkit';
+import type { IssueShape } from '../../../../git/models/issue';
+import type { PullRequestShape } from '../../../../git/models/pullRequest';
 import type { State } from '../../../../plus/webviews/focus/protocol';
 import {
-	DidChangeStateNotificationType,
-	DidChangeSubscriptionNotificationType,
+	DidChangeNotificationType,
+	OpenBranchCommandType,
+	OpenWorktreeCommandType,
+	PinIssueCommandType,
+	PinPrCommandType,
+	SnoozeIssueCommandType,
+	SnoozePrCommandType,
+	SwitchToBranchCommandType,
 } from '../../../../plus/webviews/focus/protocol';
 import type { IpcMessage } from '../../../protocol';
-import { ExecuteCommandType, onIpc } from '../../../protocol';
+import { onIpc } from '../../../protocol';
 import { App } from '../../shared/appBase';
-import type { AccountBadge } from '../../shared/components/account/account-badge';
 import { DOM } from '../../shared/dom';
-import type { IssueRow } from './components/issue-row';
-import type { PlusContent } from './components/plus-content';
-import type { PullRequestRow } from './components/pull-request-row';
-import '../../shared/components/code-icon';
-import '../../shared/components/avatars/avatar-item';
-import '../../shared/components/avatars/avatar-stack';
-import '../../shared/components/table/table-container';
-import '../../shared/components/table/table-row';
-import '../../shared/components/table/table-cell';
-import '../../shared/components/account/account-badge';
-import './components/issue-row';
-import './components/plus-content';
-import './components/pull-request-row';
+import type { GlFocusApp } from './components/focus-app';
+import type { GkIssueRow } from './components/gk-issue-row';
+import type { GkPullRequestRow } from './components/gk-pull-request-row';
+import './components/focus-app';
 import './focus.scss';
 
 export class FocusApp extends App<State> {
@@ -29,59 +26,95 @@ export class FocusApp extends App<State> {
 		super('FocusApp');
 	}
 
-	_prFilter?: string;
-	_issueFilter?: string;
-
 	override onInitialize() {
-		this.log(`${this.appName}.onInitialize`);
-		provideVSCodeDesignSystem().register(vsCodeButton());
-		this.renderContent();
-		console.log(this.state);
+		this.attachState();
 	}
 
 	protected override onBind() {
 		const disposables = super.onBind?.() ?? [];
 
 		disposables.push(
-			DOM.on('#pr-filter [data-tab]', 'click', e =>
-				this.onSelectTab(e, val => {
-					this._prFilter = val;
-					this.renderPullRequests();
-				}),
+			DOM.on<GkPullRequestRow, PullRequestShape>(
+				'gk-pull-request-row',
+				'open-worktree',
+				(e, target: HTMLElement) => this.onOpenWorktree(e, target),
 			),
-		);
-		disposables.push(
-			DOM.on('#issue-filter [data-tab]', 'click', e =>
-				this.onSelectTab(e, val => {
-					this._issueFilter = val;
-					this.renderIssues();
-				}),
+			DOM.on<GkPullRequestRow, PullRequestShape>('gk-pull-request-row', 'open-branch', (e, target: HTMLElement) =>
+				this.onOpenBranch(e, target),
 			),
-		);
-		disposables.push(
-			DOM.on('[data-action]', 'click', (e, target: HTMLElement) => this.onDataActionClicked(e, target)),
-		);
-		disposables.push(
-			DOM.on<PlusContent, string>('plus-content', 'action', (e, target: HTMLElement) =>
-				this.onPlusActionClicked(e, target),
+			DOM.on<GkPullRequestRow, PullRequestShape>(
+				'gk-pull-request-row',
+				'switch-branch',
+				(e, target: HTMLElement) => this.onSwitchBranch(e, target),
+			),
+			DOM.on<GkPullRequestRow, { item: PullRequestShape | IssueShape; snooze?: string }>(
+				'gk-pull-request-row',
+				'snooze-item',
+				(e, _target: HTMLElement) => this.onSnoozeItem(e, false),
+			),
+			DOM.on<GkPullRequestRow, { item: PullRequestShape | IssueShape; pin?: string }>(
+				'gk-pull-request-row',
+				'pin-item',
+				(e, _target: HTMLElement) => this.onPinItem(e, false),
+			),
+			DOM.on<GkIssueRow, { item: PullRequestShape | IssueShape; snooze?: string }>(
+				'gk-issue-row',
+				'snooze-item',
+				(e, _target: HTMLElement) => this.onSnoozeItem(e, true),
+			),
+			DOM.on<GkIssueRow, { item: PullRequestShape | IssueShape; pin?: string }>(
+				'gk-issue-row',
+				'pin-item',
+				(e, _target: HTMLElement) => this.onPinItem(e, true),
 			),
 		);
 
 		return disposables;
 	}
 
-	private onDataActionClicked(_e: MouseEvent, target: HTMLElement) {
-		const action = target.dataset.action;
-		this.onActionClickedCore(action);
+	private _component?: GlFocusApp;
+	private get component() {
+		if (this._component == null) {
+			this._component = (document.getElementById('app') as GlFocusApp)!;
+		}
+		return this._component;
 	}
 
-	private onPlusActionClicked(e: CustomEvent<string>, _target: HTMLElement) {
-		this.onActionClickedCore(e.detail);
+	attachState() {
+		this.component.state = this.state;
 	}
 
-	private onActionClickedCore(action?: string) {
-		if (action?.startsWith('command:')) {
-			this.sendCommand(ExecuteCommandType, { command: action.slice(8) });
+	private onOpenBranch(e: CustomEvent<PullRequestShape>, _target: HTMLElement) {
+		if (e.detail?.refs?.head == null) return;
+		this.sendCommand(OpenBranchCommandType, { pullRequest: e.detail });
+	}
+
+	private onSwitchBranch(e: CustomEvent<PullRequestShape>, _target: HTMLElement) {
+		if (e.detail?.refs?.head == null) return;
+		this.sendCommand(SwitchToBranchCommandType, { pullRequest: e.detail });
+	}
+
+	private onOpenWorktree(e: CustomEvent<PullRequestShape>, _target: HTMLElement) {
+		if (e.detail?.refs?.head == null) return;
+		this.sendCommand(OpenWorktreeCommandType, { pullRequest: e.detail });
+	}
+
+	private onSnoozeItem(e: CustomEvent<{ item: PullRequestShape | IssueShape; snooze?: string }>, isIssue: boolean) {
+		if (isIssue) {
+			this.sendCommand(SnoozeIssueCommandType, { issue: e.detail.item as IssueShape, snooze: e.detail.snooze });
+		} else {
+			this.sendCommand(SnoozePrCommandType, {
+				pullRequest: e.detail.item as PullRequestShape,
+				snooze: e.detail.snooze,
+			});
+		}
+	}
+
+	private onPinItem(e: CustomEvent<{ item: PullRequestShape | IssueShape; pin?: string }>, isIssue: boolean) {
+		if (isIssue) {
+			this.sendCommand(PinIssueCommandType, { issue: e.detail.item as IssueShape, pin: e.detail.pin });
+		} else {
+			this.sendCommand(PinPrCommandType, { pullRequest: e.detail.item as PullRequestShape, pin: e.detail.pin });
 		}
 	}
 
@@ -90,125 +123,14 @@ export class FocusApp extends App<State> {
 		this.log(`onMessageReceived(${msg.id}): name=${msg.method}`);
 
 		switch (msg.method) {
-			case DidChangeStateNotificationType.method:
-				onIpc(DidChangeStateNotificationType, msg, params => {
-					this.setState({ ...this.state, ...params.state });
-					this.renderContent();
-				});
-				break;
-			case DidChangeSubscriptionNotificationType.method:
-				onIpc(DidChangeSubscriptionNotificationType, msg, params => {
-					this.setState({ ...this.state, subscription: params.subscription, isPlus: params.isPlus });
-					this.renderContent();
+			case DidChangeNotificationType.method:
+				onIpc(DidChangeNotificationType, msg, params => {
+					this.state = params.state;
+					this.setState(this.state);
+					this.attachState();
 				});
 				break;
 		}
-	}
-
-	renderContent() {
-		this.renderAccountState();
-
-		if (this.state.isPlus) {
-			this.renderPullRequests();
-			this.renderIssues();
-		}
-	}
-
-	renderPullRequests() {
-		const tableEl = document.getElementById('pull-requests');
-		if (tableEl == null) return;
-
-		const rowEls = tableEl.querySelectorAll('pull-request-row');
-		rowEls.forEach(el => el.remove());
-
-		const noneEl = document.getElementById('no-pull-requests')!;
-		const loadingEl = document.getElementById('loading-pull-requests')!;
-		if (this.state.pullRequests == null) {
-			noneEl.setAttribute('hidden', 'true');
-			loadingEl.removeAttribute('hidden');
-		} else if (this.state.pullRequests.length === 0) {
-			noneEl.removeAttribute('hidden');
-			loadingEl.setAttribute('hidden', 'true');
-		} else {
-			noneEl.setAttribute('hidden', 'true');
-			loadingEl.setAttribute('hidden', 'true');
-			this.state.pullRequests.forEach(({ pullRequest, reasons }) => {
-				if (this._prFilter == null || this._prFilter === '' || reasons.includes(this._prFilter)) {
-					const rowEl = document.createElement('pull-request-row') as PullRequestRow;
-					rowEl.pullRequest = pullRequest;
-					rowEl.reasons = reasons;
-
-					tableEl.append(rowEl);
-				}
-			});
-		}
-	}
-
-	renderIssues() {
-		const tableEl = document.getElementById('issues')!;
-
-		const rowEls = tableEl.querySelectorAll('issue-row');
-		rowEls.forEach(el => el.remove());
-
-		const noneEl = document.getElementById('no-issues')!;
-		const loadingEl = document.getElementById('loading-issues')!;
-		if (this.state.issues == null) {
-			noneEl.setAttribute('hidden', 'true');
-			loadingEl.removeAttribute('hidden');
-		} else if (this.state.issues.length === 0) {
-			noneEl.removeAttribute('hidden');
-			loadingEl.setAttribute('hidden', 'true');
-		} else {
-			noneEl.setAttribute('hidden', 'true');
-			loadingEl.setAttribute('hidden', 'true');
-			this.state.issues.forEach(({ issue, reasons }) => {
-				if (this._issueFilter == null || this._issueFilter === '' || reasons.includes(this._issueFilter)) {
-					const rowEl = document.createElement('issue-row') as IssueRow;
-					rowEl.issue = issue;
-					rowEl.reasons = reasons;
-
-					tableEl.append(rowEl);
-				}
-			});
-		}
-	}
-
-	renderAccountState() {
-		const content = document.getElementById('content')!;
-		const accountOverlay = document.getElementById('account-overlay')!;
-		const connectOverlay = document.getElementById('connect-overlay')!;
-
-		if (!this.state.isPlus) {
-			content.setAttribute('aria-hidden', 'true');
-			accountOverlay.removeAttribute('hidden');
-			connectOverlay.setAttribute('hidden', 'true');
-		} else if (this.state.repos != null && this.state.repos.some(repo => repo.isConnected) === false) {
-			content.setAttribute('aria-hidden', 'true');
-			accountOverlay.setAttribute('hidden', 'true');
-			connectOverlay.removeAttribute('hidden');
-		} else {
-			content.removeAttribute('aria-hidden');
-			accountOverlay.setAttribute('hidden', 'true');
-			connectOverlay.setAttribute('hidden', 'true');
-		}
-
-		const badgeEl = document.getElementById('account-badge')! as AccountBadge;
-		badgeEl.subscription = this.state.subscription;
-	}
-
-	onSelectTab(e: Event, callback?: (val?: string) => void) {
-		const thisEl = e.target as HTMLElement;
-		const tab = thisEl.dataset.tab!;
-
-		thisEl.parentElement?.querySelectorAll('[data-tab]')?.forEach(el => {
-			if ((el as HTMLElement).dataset.tab !== tab) {
-				el.classList.remove('is-active');
-			} else {
-				el.classList.add('is-active');
-			}
-		});
-
-		callback?.(tab);
 	}
 }
 

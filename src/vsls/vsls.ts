@@ -1,9 +1,9 @@
 import { Disposable, extensions, workspace } from 'vscode';
 import type { LiveShare, LiveShareExtension, SessionChangeEvent } from '../@types/vsls';
-import { ContextKeys, Schemes } from '../constants';
+import { Schemes } from '../constants';
 import type { Container } from '../container';
-import { setContext } from '../context';
 import { configuration } from '../system/configuration';
+import { setContext } from '../system/context';
 import { debug } from '../system/decorators/log';
 import { timeout } from '../system/decorators/timeout';
 import { once } from '../system/event';
@@ -68,14 +68,14 @@ export class VslsController implements Disposable {
 			this._api = this.getLiveShareApi();
 			const api = await this._api;
 			if (api == null) {
-				void setContext(ContextKeys.Vsls, false);
+				void setContext('gitlens:vsls', false);
 				// Tear it down if we can't talk to live share
 				this._ready.fulfill();
 
 				return;
 			}
 
-			void setContext(ContextKeys.Vsls, true);
+			void setContext('gitlens:vsls', true);
 
 			this._disposable = Disposable.from(
 				this._disposable,
@@ -97,7 +97,7 @@ export class VslsController implements Disposable {
 		switch (e.session.role) {
 			case 1 /*Role.Host*/:
 				this.setReadonly(false);
-				void setContext(ContextKeys.Vsls, 'host');
+				void setContext('gitlens:vsls', 'host');
 				if (configuration.get('liveshare.allowGuestAccess')) {
 					this._host = await VslsHostService.share(api, this.container);
 				}
@@ -108,7 +108,7 @@ export class VslsController implements Disposable {
 
 			case 2 /*Role.Guest*/:
 				this.setReadonly(true);
-				void setContext(ContextKeys.Vsls, 'guest');
+				void setContext('gitlens:vsls', 'guest');
 				this._guest = await VslsGuestService.connect(api, this.container);
 
 				this._ready.fulfill();
@@ -117,9 +117,11 @@ export class VslsController implements Disposable {
 
 			default:
 				this.setReadonly(false);
-				void setContext(ContextKeys.Vsls, true);
+				void setContext('gitlens:vsls', true);
 
-				this._ready = defer<void>();
+				if (!this._ready.pending) {
+					this._ready = defer<void>();
+				}
 
 				break;
 		}
@@ -132,8 +134,9 @@ export class VslsController implements Disposable {
 				const vslsExtension = extension.isActive ? extension.exports : await extension.activate();
 				return (await vslsExtension.getApi('1.0.4753')) ?? undefined;
 			}
-		} catch {
+		} catch (ex) {
 			debugger;
+			Logger.error(ex);
 		}
 
 		return undefined;
@@ -145,7 +148,7 @@ export class VslsController implements Disposable {
 	}
 	private setReadonly(value: boolean) {
 		this._readonly = value;
-		void setContext(ContextKeys.Readonly, value ? true : undefined);
+		void setContext('gitlens:readonly', value ? true : undefined);
 	}
 
 	async guest() {

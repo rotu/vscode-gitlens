@@ -6,39 +6,35 @@ import { configuration } from '../../system/configuration';
 import { gate } from '../../system/decorators/gate';
 import { debug } from '../../system/decorators/log';
 import { timeout } from '../../system/decorators/timeout';
-import type { ContributorsView } from '../contributorsView';
-import type { RepositoriesView } from '../repositoriesView';
+import type { ViewsWithContributorsNode } from '../viewBase';
 import { MessageNode } from './common';
 import { ContributorNode } from './contributorNode';
-import { RepositoryNode } from './repositoryNode';
-import { ContextValues, ViewNode } from './viewNode';
+import { ContextValues, getViewNodeId, ViewNode } from './viewNode';
 
-export class ContributorsNode extends ViewNode<ContributorsView | RepositoriesView> {
-	static key = ':contributors';
-	static getId(repoPath: string): string {
-		return `${RepositoryNode.getId(repoPath)}${this.key}`;
-	}
-
+export class ContributorsNode extends ViewNode<'contributors', ViewsWithContributorsNode> {
 	protected override splatted = true;
-
-	private _children: ContributorNode[] | undefined;
 
 	constructor(
 		uri: GitUri,
-		view: ContributorsView | RepositoriesView,
-		parent: ViewNode,
+		view: ViewsWithContributorsNode,
+		protected override readonly parent: ViewNode,
 		public readonly repo: Repository,
 	) {
-		super(uri, view, parent);
+		super('contributors', uri, view, parent);
+
+		this.updateContext({ repository: repo });
+		this._uniqueId = getViewNodeId(this.type, this.context);
 	}
 
 	override get id(): string {
-		return ContributorsNode.getId(this.repo.path);
+		return this._uniqueId;
 	}
 
 	get repoPath(): string {
 		return this.repo.path;
 	}
+
+	private _children: ContributorNode[] | undefined;
 
 	async getChildren(): Promise<ViewNode[]> {
 		if (this._children == null) {
@@ -64,7 +60,12 @@ export class ContributorsNode extends ViewNode<ContributorsView | RepositoriesVi
 			const presenceMap = await this.maybeGetPresenceMap(contributors);
 
 			this._children = contributors.map(
-				c => new ContributorNode(this.uri, this.view, this, c, { all: all, ref: ref, presence: presenceMap }),
+				c =>
+					new ContributorNode(this.uri, this.view, this, c, {
+						all: all,
+						ref: ref,
+						presence: presenceMap,
+					}),
 			);
 		}
 

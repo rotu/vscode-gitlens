@@ -4,28 +4,33 @@ import type { Repository } from '../../git/models/repository';
 import { gate } from '../../system/decorators/gate';
 import { debug } from '../../system/decorators/log';
 import { map } from '../../system/iterable';
-import type { RepositoriesView } from '../repositoriesView';
-import type { StashesView } from '../stashesView';
+import type { ViewsWithStashesNode } from '../viewBase';
 import { MessageNode } from './common';
-import { RepositoryNode } from './repositoryNode';
 import { StashNode } from './stashNode';
-import { ContextValues, ViewNode } from './viewNode';
+import { ContextValues, getViewNodeId, ViewNode } from './viewNode';
 
-export class StashesNode extends ViewNode<StashesView | RepositoriesView> {
-	static key = ':stashes';
-	static getId(repoPath: string): string {
-		return `${RepositoryNode.getId(repoPath)}${this.key}`;
-	}
+export class StashesNode extends ViewNode<'stashes', ViewsWithStashesNode> {
+	constructor(
+		uri: GitUri,
+		view: ViewsWithStashesNode,
+		protected override parent: ViewNode,
+		public readonly repo: Repository,
+	) {
+		super('stashes', uri, view, parent);
 
-	private _children: ViewNode[] | undefined;
-
-	constructor(uri: GitUri, view: StashesView | RepositoriesView, parent: ViewNode, public readonly repo: Repository) {
-		super(uri, view, parent);
+		this.updateContext({ repository: repo });
+		this._uniqueId = getViewNodeId(this.type, this.context);
 	}
 
 	override get id(): string {
-		return StashesNode.getId(this.repo.path);
+		return this._uniqueId;
 	}
+
+	get repoPath(): string {
+		return this.repo.path;
+	}
+
+	private _children: ViewNode[] | undefined;
 
 	async getChildren(): Promise<ViewNode[]> {
 		if (this._children == null) {

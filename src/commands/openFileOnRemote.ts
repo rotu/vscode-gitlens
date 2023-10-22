@@ -1,6 +1,5 @@
 import type { TextEditor, Uri } from 'vscode';
 import { Range } from 'vscode';
-import { BranchSorting, TagSorting } from '../config';
 import { Commands, GlyphChars } from '../constants';
 import type { Container } from '../container';
 import { GitUri } from '../git/gitUri';
@@ -26,6 +25,7 @@ import type { OpenOnRemoteCommandArgs } from './openOnRemote';
 export interface OpenFileOnRemoteCommandArgs {
 	branchOrTag?: string;
 	clipboard?: boolean;
+	line?: number;
 	range?: boolean;
 	sha?: string;
 	pickBranchOrTag?: boolean;
@@ -46,6 +46,10 @@ export class OpenFileOnRemoteCommand extends ActiveEditorCommand {
 
 	protected override async preExecute(context: CommandContext, args?: OpenFileOnRemoteCommandArgs) {
 		let uri = context.uri;
+
+		if (context.type === 'editorLine') {
+			args = { ...args, line: context.line, range: true };
+		}
 
 		if (context.command === Commands.CopyRemoteFileUrlWithoutRange) {
 			args = { ...args, range: false };
@@ -100,7 +104,7 @@ export class OpenFileOnRemoteCommand extends ActiveEditorCommand {
 		}
 
 		if (context.command === Commands.OpenFileOnRemoteFrom || context.command === Commands.CopyRemoteFileUrlFrom) {
-			args = { ...args, pickBranchOrTag: true, range: false };
+			args = { ...args, pickBranchOrTag: true, range: false }; // Override range since it can be wrong at a different commit
 		}
 
 		return this.execute(context.editor, uri, args);
@@ -117,15 +121,21 @@ export class OpenFileOnRemoteCommand extends ActiveEditorCommand {
 
 		try {
 			let remotes = await this.container.git.getRemotesWithProviders(gitUri.repoPath);
-			const range =
-				args.range && editor != null && UriComparer.equals(editor.document.uri, uri)
-					? new Range(
-							editor.selection.start.with({ line: editor.selection.start.line + 1 }),
-							editor.selection.end.with({
-								line: editor.selection.end.line + (editor.selection.end.character === 0 ? 0 : 1),
-							}),
-					  )
-					: undefined;
+
+			let range: Range | undefined;
+			if (args.range) {
+				if (editor != null && UriComparer.equals(editor.document.uri, uri)) {
+					range = new Range(
+						editor.selection.start.with({ line: editor.selection.start.line + 1 }),
+						editor.selection.end.with({
+							line: editor.selection.end.line + (editor.selection.end.character === 0 ? 0 : 1),
+						}),
+					);
+				} else if (args.line != null) {
+					range = new Range(args.line + 1, 0, args.line + 1, 0);
+				}
+			}
+
 			let sha = args.sha ?? gitUri.sha;
 
 			if (args.branchOrTag == null && sha != null && !isSha(sha) && remotes.length !== 0) {
@@ -161,8 +171,8 @@ export class OpenFileOnRemoteCommand extends ActiveEditorCommand {
 							filter: { branches: b => b.remote || b.upstream != null },
 							picked: args.branchOrTag,
 							sort: {
-								branches: { current: true, orderBy: BranchSorting.DateDesc },
-								tags: { orderBy: TagSorting.DateDesc },
+								branches: { current: true, orderBy: 'date:desc' },
+								tags: { orderBy: 'date:desc' },
 							},
 						},
 					);

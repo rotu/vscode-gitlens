@@ -1,11 +1,11 @@
 import type { FeatureAccess } from '../../../features';
+import type { WebviewState } from '../../../webviews/protocol';
 import { IpcCommandType, IpcNotificationType } from '../../../webviews/protocol';
 
-export interface State {
+export interface State extends WebviewState {
 	dataset?: Commit[];
-	emptyMessage?: string;
 	period: Period;
-	title: string;
+	title?: string;
 	sha?: string;
 	uri?: string;
 
@@ -26,7 +26,7 @@ export interface Commit {
 	sort: number;
 }
 
-export type Period = `${number}|${'D' | 'M' | 'Y'}`;
+export type Period = `${number}|${'D' | 'M' | 'Y'}` | 'all';
 
 export interface DidChangeParams {
 	state: State;

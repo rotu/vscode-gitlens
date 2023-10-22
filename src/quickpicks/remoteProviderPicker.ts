@@ -1,7 +1,8 @@
 import type { Disposable, QuickInputButton } from 'vscode';
 import { env, Uri, window } from 'vscode';
-import type { OpenOnRemoteCommandArgs } from '../commands';
+import type { OpenOnRemoteCommandArgs } from '../commands/openOnRemote';
 import { SetRemoteAsDefaultQuickInputButton } from '../commands/quickCommand.buttons';
+import type { Keys } from '../constants';
 import { Commands, GlyphChars } from '../constants';
 import { Container } from '../container';
 import { getBranchNameWithoutRemote, getRemoteNameFromBranchName } from '../git/models/branch';
@@ -9,7 +10,6 @@ import { GitRemote } from '../git/models/remote';
 import type { RemoteResource } from '../git/models/remoteResource';
 import { getNameFromRemoteResource, RemoteResourceType } from '../git/models/remoteResource';
 import type { RemoteProvider } from '../git/remotes/remoteProvider';
-import type { Keys } from '../system/keyboard';
 import { getSettledValue } from '../system/promise';
 import { getQuickPickIgnoreFocusOut } from '../system/utils';
 import { CommandQuickPickItem } from './items/common';
@@ -21,7 +21,7 @@ export class ConfigureCustomRemoteProviderCommandQuickPickItem extends CommandQu
 
 	override async execute(): Promise<void> {
 		await env.openExternal(
-			Uri.parse('https://github.com/gitkraken/vscode-gitlens#remote-provider-integration-settings-'),
+			Uri.parse('https://help.gitkraken.com/gitlens/gitlens-settings/#remote-provider-integration-settings'),
 		);
 	}
 }
@@ -54,7 +54,7 @@ export class CopyOrOpenRemoteCommandQuickPickItem extends CommandQuickPickItem {
 			let branch = resource.base.branch;
 			if (branch == null) {
 				branch = await Container.instance.git.getDefaultBranchName(this.remote.repoPath, this.remote.name);
-				if (branch == null && this.remote.hasRichProvider()) {
+				if (branch == null && this.remote.hasRichIntegration()) {
 					const defaultBranch = await this.remote.provider.getDefaultBranch?.();
 					branch = defaultBranch?.name;
 				}

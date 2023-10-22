@@ -20,17 +20,9 @@ import type {
 	StepSelection,
 	StepState,
 } from '../quickCommand';
-import {
-	appendReposToTitle,
-	canPickStepContinue,
-	endSteps,
-	pickBranchOrTagStep,
-	pickCommitStep,
-	PickCommitToggleQuickInputButton,
-	pickRepositoryStep,
-	QuickCommand,
-	StepResultBreak,
-} from '../quickCommand';
+import { canPickStepContinue, endSteps, QuickCommand, StepResultBreak } from '../quickCommand';
+import { PickCommitToggleQuickInputButton } from '../quickCommand.buttons';
+import { appendReposToTitle, pickBranchOrTagStep, pickCommitStep, pickRepositoryStep } from '../quickCommand.steps';
 
 interface Context {
 	repos: Repository[];
@@ -94,7 +86,8 @@ export class RebaseGitCommand extends QuickCommand<State> {
 			const editor = getEditorCommand();
 			configs = ['-c', `"sequence.editor=${editor}"`];
 		}
-		return state.repo.rebase(configs, ...state.flags, state.reference.ref);
+
+		state.repo.rebase(configs, ...state.flags, state.reference.ref);
 	}
 
 	protected async *steps(state: PartialStepState<State>): StepGenerator {
@@ -185,7 +178,7 @@ export class RebaseGitCommand extends QuickCommand<State> {
 
 				let log = context.cache.get(ref);
 				if (log == null) {
-					log = this.container.git.getLog(state.repo.path, { ref: ref, merges: false });
+					log = this.container.git.getLog(state.repo.path, { ref: ref, merges: 'first-parent' });
 					context.cache.set(ref, log);
 				}
 

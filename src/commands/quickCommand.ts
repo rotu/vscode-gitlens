@@ -1,12 +1,9 @@
 import type { InputBox, QuickInputButton, QuickPick, QuickPickItem } from 'vscode';
+import type { Keys } from '../constants';
 import type { Container } from '../container';
 import type { DirectiveQuickPickItem } from '../quickpicks/items/directive';
 import { createDirectiveQuickPickItem, Directive, isDirective } from '../quickpicks/items/directive';
 import { configuration } from '../system/configuration';
-import type { Keys } from '../system/keyboard';
-
-export * from './quickCommand.buttons';
-export * from './quickCommand.steps';
 
 export interface CustomStep<T = unknown> {
 	ignoreFocusOut?: boolean;
@@ -56,6 +53,8 @@ export interface QuickPickStep<T extends QuickPickItem = QuickPickItem> {
 	title?: string;
 	value?: string;
 	selectValueWhenShown?: boolean;
+
+	frozen?: boolean;
 
 	onDidAccept?(quickpick: QuickPick<T>): boolean | Promise<boolean>;
 	onDidChangeValue?(quickpick: QuickPick<T>): boolean | Promise<boolean>;
@@ -352,4 +351,16 @@ export function createCustomStep<T>(step: CustomStep<T>): CustomStep<T> {
 
 export function endSteps(state: PartialStepState) {
 	state.counter = -1;
+}
+
+export function freezeStep(step: QuickPickStep, quickpick: QuickPick<any>): Disposable {
+	quickpick.enabled = false;
+	step.frozen = true;
+	return {
+		[Symbol.dispose]: () => {
+			step.frozen = false;
+			quickpick.enabled = true;
+			quickpick.show();
+		},
+	};
 }

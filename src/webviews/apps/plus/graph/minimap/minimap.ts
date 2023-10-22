@@ -3,7 +3,7 @@ import type { Chart, DataItem, RegionOptions } from 'billboard.js';
 import { groupByMap } from '../../../../../system/array';
 import { debug } from '../../../../../system/decorators/log';
 import { debounce } from '../../../../../system/function';
-import { first, flatMap, map, some, union } from '../../../../../system/iterable';
+import { first, flatMap, map, union } from '../../../../../system/iterable';
 import { pluralize } from '../../../../../system/string';
 import { formatDate, formatNumeric, fromNow } from '../../../shared/date';
 
@@ -54,7 +54,14 @@ export interface GraphMinimapDaySelectedEventDetail {
 }
 
 const template = html<GraphMinimap>`<template>
+	<div id="spinner" ${ref('spinner')}><code-icon icon="loading" modifier="spin"></code-icon></div>
 	<div id="chart" ${ref('chart')}></div>
+	<div
+		class="legend"
+		title="${x => (x.dataType === 'lines' ? 'Showing lines changed per day' : 'Showing commits per day')}"
+	>
+		<code-icon icon="${x => (x.dataType === 'lines' ? 'request-changes' : 'git-commit')}"></code-icon>
+	</div>
 </template>`;
 
 const styles = css`
@@ -69,15 +76,39 @@ const styles = css`
 
 	#chart {
 		height: 100%;
-		width: 100%;
+		width: calc(100% - 1rem);
 		overflow: hidden;
 		position: initial !important;
+	}
+
+	#spinner {
+		position: absolute;
+		inset: 0;
+		display: flex;
+		justify-content: center;
+		align-items: center;
+		z-index: 1;
+	}
+
+	#spinner[aria-hidden='true'] {
+		display: none;
+	}
+
+	.legend {
+		position: absolute;
+		top: 0;
+		right: 0;
+		bottom: 0;
+		display: flex;
+		align-items: center;
+		z-index: 1;
+		opacity: 0.7;
+		cursor: help;
 	}
 
 	.bb svg {
 		font: 10px var(--font-family);
 		-webkit-tap-highlight-color: rgba(0, 0, 0, 0);
-		transform: translateX(2.5em) rotateY(180deg);
 	}
 
 	.bb-chart {
@@ -142,7 +173,7 @@ const styles = css`
 
 	.bb-region.visible-area {
 		fill: var(--color-graph-minimap-visibleAreaBackground);
-		transform: translateY(-4px);
+		/* transform: translateY(-4px); */
 	}
 	.bb-region.visible-area > rect {
 		height: 100%;
@@ -150,7 +181,7 @@ const styles = css`
 
 	.bb-region.marker-result {
 		fill: var(--color-graph-minimap-marker-highlights);
-		transform: translate(-1px, -4px);
+		transform: translateX(-1px);
 		z-index: 10;
 	}
 	.bb-region.marker-result > rect {
@@ -161,7 +192,7 @@ const styles = css`
 	.bb-region.marker-head {
 		fill: var(--color-graph-minimap-marker-head);
 		stroke: var(--color-graph-minimap-marker-head);
-		transform: translate(-1px, -4px);
+		transform: translateX(-1px);
 	}
 	.bb-region.marker-head > rect {
 		width: 1px;
@@ -171,7 +202,7 @@ const styles = css`
 	.bb-region.marker-head-arrow-left {
 		fill: var(--color-graph-minimap-marker-head);
 		stroke: var(--color-graph-minimap-marker-head);
-		transform: translate(-5px, -5px) skewX(45deg);
+		transform: translate(-5px, -1px) skewX(45deg);
 	}
 	.bb-region.marker-head-arrow-left > rect {
 		width: 3px;
@@ -181,7 +212,7 @@ const styles = css`
 	.bb-region.marker-head-arrow-right {
 		fill: var(--color-graph-minimap-marker-head);
 		stroke: var(--color-graph-minimap-marker-head);
-		transform: translate(1px, -5px) skewX(-45deg);
+		transform: translate(1px, -1px) skewX(-45deg);
 	}
 	.bb-region.marker-head-arrow-right > rect {
 		width: 3px;
@@ -191,7 +222,7 @@ const styles = css`
 	.bb-region.marker-upstream {
 		fill: var(--color-graph-minimap-marker-upstream);
 		stroke: var(--color-graph-minimap-marker-upstream);
-		transform: translate(-1px, -4px);
+		transform: translateX(-1px);
 	}
 	.bb-region.marker-upstream > rect {
 		width: 1px;
@@ -201,7 +232,7 @@ const styles = css`
 	.bb-region.marker-branch {
 		fill: var(--color-graph-minimap-marker-local-branches);
 		stroke: var(--color-graph-minimap-marker-local-branches);
-		transform: translate(-2px, 32px);
+		transform: translate(-2px, 35px);
 	}
 	.bb-region.marker-branch > rect {
 		width: 3px;
@@ -211,7 +242,7 @@ const styles = css`
 	.bb-region.marker-remote {
 		fill: var(--color-graph-minimap-marker-remote-branches);
 		stroke: var(--color-graph-minimap-marker-remote-branches);
-		transform: translate(-2px, 26px);
+		transform: translate(-2px, 29px);
 	}
 	.bb-region.marker-remote > rect {
 		width: 3px;
@@ -221,7 +252,7 @@ const styles = css`
 	.bb-region.marker-stash {
 		fill: var(--color-graph-minimap-marker-stashes);
 		stroke: var(--color-graph-minimap-marker-stashes);
-		transform: translate(-2px, 32px);
+		transform: translate(-2px, 35px);
 	}
 	.bb-region.marker-stash > rect {
 		width: 3px;
@@ -231,7 +262,7 @@ const styles = css`
 	.bb-region.marker-tag {
 		fill: var(--color-graph-minimap-marker-tags);
 		stroke: var(--color-graph-minimap-marker-tags);
-		transform: translate(-2px, 26px);
+		transform: translate(-2px, 29px);
 	}
 	.bb-region.marker-tag > rect {
 		width: 3px;
@@ -393,6 +424,7 @@ const markerZOrder = [
 @customElement({ name: 'graph-minimap', template: template, styles: styles })
 export class GraphMinimap extends FASTElement {
 	chart!: HTMLDivElement;
+	spinner!: HTMLDivElement;
 
 	private _chart!: Chart;
 	private _loadTimer: ReturnType<typeof setTimeout> | undefined;
@@ -402,7 +434,6 @@ export class GraphMinimap extends FASTElement {
 
 	@observable
 	activeDay: number | undefined;
-	@debug({ singleLine: true })
 	protected activeDayChanged() {
 		this.select(this.activeDay);
 	}
@@ -429,6 +460,12 @@ export class GraphMinimap extends FASTElement {
 	}
 
 	@observable
+	dataType: 'commits' | 'lines' = 'commits';
+	protected dataTypeChanged() {
+		this.dataChanged();
+	}
+
+	@observable
 	markers: Map<number, GraphMinimapMarker[]> | undefined;
 	protected markersChanged() {
 		this.dataChanged(undefined, undefined, true);
@@ -445,7 +482,6 @@ export class GraphMinimap extends FASTElement {
 
 	@observable
 	visibleDays: { top: number; bottom: number } | undefined;
-	@debug({ singleLine: true })
 	protected visibleDaysChanged() {
 		this._chart?.regions.remove({ classes: ['visible-area'] });
 		if (this.visibleDays == null) return;
@@ -467,10 +503,13 @@ export class GraphMinimap extends FASTElement {
 	}
 
 	private getInternalChart(): any {
-		return (this._chart as any).internal;
+		try {
+			return (this._chart as any)?.internal;
+		} catch {
+			return undefined;
+		}
 	}
 
-	@debug({ singleLine: true })
 	select(date: number | Date | undefined, trackOnly: boolean = false) {
 		if (date == null) {
 			this.unselect();
@@ -482,6 +521,8 @@ export class GraphMinimap extends FASTElement {
 		if (d == null) return;
 
 		const internal = this.getInternalChart();
+		if (internal == null) return;
+
 		internal.showGridFocus([d]);
 
 		if (!trackOnly) {
@@ -492,10 +533,9 @@ export class GraphMinimap extends FASTElement {
 		}
 	}
 
-	@debug({ singleLine: true })
 	unselect(date?: number | Date, focus: boolean = false) {
 		if (focus) {
-			this.getInternalChart().hideGridFocus();
+			this.getInternalChart()?.hideGridFocus();
 
 			return;
 		}
@@ -510,7 +550,7 @@ export class GraphMinimap extends FASTElement {
 		}
 	}
 
-	private getData(date: number | Date): DataItem<number> | undefined {
+	private getData(date: number | Date): DataItem | undefined {
 		date = new Date(date).setHours(0, 0, 0, 0);
 		return this._chart
 			?.data()[0]
@@ -594,15 +634,15 @@ export class GraphMinimap extends FASTElement {
 					start: day,
 					end: day,
 					class: 'marker-result',
-				} satisfies RegionOptions),
+				}) satisfies RegionOptions,
 		);
 	}
 
 	private getVisibleAreaRegion(visibleDays: NonNullable<typeof this.visibleDays>): RegionOptions {
 		return {
 			axis: 'x',
-			start: visibleDays.bottom,
-			end: visibleDays.top,
+			start: visibleDays.top,
+			end: visibleDays.bottom,
 			class: 'visible-area',
 		} satisfies RegionOptions;
 	}
@@ -617,13 +657,15 @@ export class GraphMinimap extends FASTElement {
 	@debug({ singleLine: true })
 	private async loadChartCore() {
 		if (!this.data?.size) {
+			this.spinner.setAttribute('aria-hidden', 'false');
+
 			this._chart?.destroy();
 			this._chart = undefined!;
 
 			return;
 		}
 
-		const hasActivity = some(this.data.values(), v => v?.activity != null);
+		const showLinesChanged = this.dataType === 'lines';
 
 		// Convert the map to an array dates and an array of stats
 		const dates = [];
@@ -654,7 +696,7 @@ export class GraphMinimap extends FASTElement {
 			stat = this.data.get(day);
 			dates.push(day);
 
-			if (hasActivity) {
+			if (showLinesChanged) {
 				adds = stat?.activity?.additions ?? 0;
 				deletes = stat?.activity?.deletions ?? 0;
 				changes = adds + deletes;
@@ -730,7 +772,6 @@ export class GraphMinimap extends FASTElement {
 				bindto: this.chart,
 				data: {
 					x: 'date',
-					xSort: false,
 					axes: {
 						activity: 'y',
 					},
@@ -769,17 +810,13 @@ export class GraphMinimap extends FASTElement {
 				},
 				axis: {
 					x: {
-						show: false,
+						inverted: true,
 						localtime: true,
 						type: 'timeseries',
 					},
 					y: {
 						min: 0,
 						max: yMax,
-						show: true,
-						padding: {
-							bottom: 8,
-						},
 					},
 				},
 				clipPath: false,
@@ -795,6 +832,13 @@ export class GraphMinimap extends FASTElement {
 				line: {
 					point: true,
 					zerobased: true,
+				},
+				padding: {
+					mode: 'fit',
+					bottom: -8,
+					left: 0,
+					right: 0,
+					top: 0,
 				},
 				point: {
 					show: true,
@@ -831,6 +875,7 @@ export class GraphMinimap extends FASTElement {
 						}
 
 						const stashesCount = groups?.get('stash')?.length ?? 0;
+						const showLinesChanged = this.dataType === 'lines';
 
 						return /*html*/ `<div class="bb-tooltip">
 							<div class="header">
@@ -844,12 +889,12 @@ export class GraphMinimap extends FASTElement {
 										: `${pluralize('commit', stat?.commits ?? 0, {
 												format: c => formatNumeric(c),
 												zero: 'No',
-										  })}, ${pluralize('file', stat?.commits ?? 0, {
-												format: c => formatNumeric(c),
-												zero: 'No',
 										  })}${
-												hasActivity
-													? `, ${pluralize(
+												showLinesChanged
+													? `, ${pluralize('file', stat?.files ?? 0, {
+															format: c => formatNumeric(c),
+															zero: 'No',
+													  })}, ${pluralize(
 															'line',
 															(stat?.activity?.additions ?? 0) +
 																(stat?.activity?.deletions ?? 0),
@@ -857,9 +902,9 @@ export class GraphMinimap extends FASTElement {
 																format: c => formatNumeric(c),
 																zero: 'No',
 															},
-													  )}`
+													  )} changed`
 													: ''
-										  } changed`
+										  }`
 								}</span>
 							</div>
 							${
@@ -872,17 +917,17 @@ export class GraphMinimap extends FASTElement {
 									  })}</span>`
 									: ''
 							}${
-											groups
-												?.get('branch')
-												?.sort((a, b) => (a.current ? -1 : 1) - (b.current ? -1 : 1))
-												.map(
-													m =>
-														/*html*/ `<span class="branch${m.current ? ' current' : ''}">${
-															m.name
-														}</span>`,
-												)
-												.join('') ?? ''
-									  }</div>
+								groups
+									?.get('branch')
+									?.sort((a, b) => (a.current ? -1 : 1) - (b.current ? -1 : 1))
+									.map(
+										m =>
+											/*html*/ `<span class="branch${m.current ? ' current' : ''}">${
+												m.name
+											}</span>`,
+									)
+									.join('') ?? ''
+							}</div>
 							<div class="refs">${
 								groups
 									?.get('remote')
@@ -895,24 +940,23 @@ export class GraphMinimap extends FASTElement {
 									)
 									.join('') ?? ''
 							}${
-											groups
-												?.get('tag')
-												?.map(m => /*html*/ `<span class="tag">${m.name}</span>`)
-												.join('') ?? ''
-									  }</div>`
+								groups
+									?.get('tag')
+									?.map(m => /*html*/ `<span class="tag">${m.name}</span>`)
+									.join('') ?? ''
+							}</div>`
 									: ''
 							}
 						</div>`;
 					},
 					grouped: true,
 					position: (_data, width, _height, element, pos) => {
-						const { x } = pos;
+						let { x } = pos;
 						const rect = (element as HTMLElement).getBoundingClientRect();
-						let left = rect.right - x;
-						if (left + width > rect.right) {
-							left = rect.right - width;
+						if (x + width > rect.right) {
+							x = rect.right - width;
 						}
-						return { top: 0, left: left };
+						return { top: 0, left: x };
 					},
 				},
 				transition: {
@@ -956,6 +1000,8 @@ export class GraphMinimap extends FASTElement {
 
 			this._chart.regions(regions);
 		}
+
+		this.spinner.setAttribute('aria-hidden', 'true');
 
 		this.activeDayChanged();
 	}

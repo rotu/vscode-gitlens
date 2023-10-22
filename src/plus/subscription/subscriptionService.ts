@@ -17,17 +17,14 @@ import {
 	ProgressLocation,
 	StatusBarAlignment,
 	ThemeColor,
-	Uri,
 	window,
 } from 'vscode';
-import { fetch, getProxyAgent } from '@env/fetch';
 import { getPlatform } from '@env/platform';
-import { Commands, ContextKeys } from '../../constants';
+import type { CoreColors } from '../../constants';
+import { Commands } from '../../constants';
 import type { Container } from '../../container';
-import { setContext } from '../../context';
 import { AccountValidationError } from '../../errors';
 import type { RepositoriesChangeEvent } from '../../git/gitProviderService';
-import { showMessage } from '../../messages';
 import type { Subscription } from '../../subscription';
 import {
 	computeSubscriptionState,
@@ -37,6 +34,7 @@ import {
 	getSubscriptionTimeRemaining,
 	getTimeRemaining,
 	isSubscriptionExpired,
+	isSubscriptionInProTrial,
 	isSubscriptionPaid,
 	isSubscriptionTrial,
 	SubscriptionPlanId,
@@ -44,10 +42,10 @@ import {
 } from '../../subscription';
 import { executeCommand, registerCommand } from '../../system/command';
 import { configuration } from '../../system/configuration';
+import { setContext } from '../../system/context';
 import { createFromDateDelta } from '../../system/date';
 import { gate } from '../../system/decorators/gate';
 import { debug, log } from '../../system/decorators/log';
-import { memoize } from '../../system/decorators/memoize';
 import type { Deferrable } from '../../system/function';
 import { debounce, once } from '../../system/function';
 import { Logger } from '../../system/logger';
@@ -56,10 +54,9 @@ import { flatten } from '../../system/object';
 import { pluralize } from '../../system/string';
 import { openWalkthrough } from '../../system/utils';
 import { satisfies } from '../../system/version';
+import { authenticationProviderId, authenticationProviderScopes } from '../gk/authenticationProvider';
+import type { ServerConnection } from '../gk/serverConnection';
 import { ensurePlusFeaturesEnabled } from './utils';
-
-// TODO: What user-agent should we use?
-const userAgent = 'Visual-Studio-Code-GitLens';
 
 export interface SubscriptionChangeEvent {
 	readonly current: Subscription;
@@ -68,9 +65,6 @@ export interface SubscriptionChangeEvent {
 }
 
 export class SubscriptionService implements Disposable {
-	private static authenticationProviderId = 'gitlens+';
-	private static authenticationScopes = ['gitlens'];
-
 	private _onDidChange = new EventEmitter<SubscriptionChangeEvent>();
 	get onDidChange(): Event<SubscriptionChangeEvent> {
 		return this._onDidChange.event;
@@ -81,10 +75,14 @@ export class SubscriptionService implements Disposable {
 	private _statusBarSubscription: StatusBarItem | undefined;
 	private _validationTimer: ReturnType<typeof setInterval> | undefined;
 
-	constructor(private readonly container: Container, previousVersion: string | undefined) {
+	constructor(
+		private readonly container: Container,
+		private readonly connection: ServerConnection,
+		previousVersion: string | undefined,
+	) {
 		this._disposable = Disposable.from(
 			once(container.onReady)(this.onReady, this),
-			this.container.subscriptionAuthentication.onDidChangeSessions(
+			this.container.accountAuthentication.onDidChangeSessions(
 				e => setTimeout(() => this.onAuthenticationChanged(e), 0),
 				this,
 			),
@@ -96,12 +94,12 @@ export class SubscriptionService implements Disposable {
 		);
 
 		const subscription = this.getStoredSubscription();
-		// Resets the preview trial state on the upgrade to 13.0
-		if (subscription != null && satisfies(previousVersion, '< 13.0')) {
+		// Resets the preview trial state on the upgrade to 14.0
+		if (subscription != null && satisfies(previousVersion, '< 14.0')) {
 			subscription.previewTrial = undefined;
 		}
 
-		this.changeSubscription(subscription, true);
+		this.changeSubscription(subscription, { silent: true });
 		setTimeout(() => void this.ensureSession(false), 10000);
 	}
 
@@ -132,49 +130,7 @@ export class SubscriptionService implements Disposable {
 		}
 
 		this._session = session;
-		void this.validate();
-	}
-
-	@memoize()
-	private get baseApiUri(): Uri {
-		const { env } = this.container;
-		if (env === 'staging') {
-			return Uri.parse('https://stagingapi.gitkraken.com');
-		}
-
-		if (env === 'dev') {
-			return Uri.parse('https://devapi.gitkraken.com');
-		}
-
-		return Uri.parse('https://api.gitkraken.com');
-	}
-
-	@memoize()
-	private get baseAccountUri(): Uri {
-		const { env } = this.container;
-		if (env === 'staging') {
-			return Uri.parse('https://stagingapp.gitkraken.com');
-		}
-
-		if (env === 'dev') {
-			return Uri.parse('https://devapp.gitkraken.com');
-		}
-
-		return Uri.parse('https://app.gitkraken.com');
-	}
-
-	@memoize()
-	private get baseSiteUri(): Uri {
-		const { env } = this.container;
-		if (env === 'staging') {
-			return Uri.parse('https://staging.gitkraken.com');
-		}
-
-		if (env === 'dev') {
-			return Uri.parse('https://dev.gitkraken.com');
-		}
-
-		return Uri.parse('https://gitkraken.com');
+		void this.validate({ force: true });
 	}
 
 	private _etag: number = 0;
@@ -199,7 +155,6 @@ export class SubscriptionService implements Disposable {
 		void this.container.viewCommands;
 
 		return [
-			registerCommand(Commands.PlusLearn, openToSide => this.learn(openToSide)),
 			registerCommand(Commands.PlusLoginOrSignUp, () => this.loginOrSignUp()),
 			registerCommand(Commands.PlusLogout, () => this.logout()),
 
@@ -208,7 +163,7 @@ export class SubscriptionService implements Disposable {
 			registerCommand(Commands.PlusPurchase, () => this.purchase()),
 
 			registerCommand(Commands.PlusResendVerification, () => this.resendVerification()),
-			registerCommand(Commands.PlusValidate, () => this.validate()),
+			registerCommand(Commands.PlusValidate, () => this.validate({ force: true })),
 
 			registerCommand(Commands.PlusShowPlans, () => this.showPlans()),
 
@@ -217,6 +172,10 @@ export class SubscriptionService implements Disposable {
 
 			registerCommand('gitlens.plus.reset', () => this.logout(true)),
 		];
+	}
+
+	async getAuthenticationSession(createIfNeeded: boolean = false): Promise<AuthenticationSession | undefined> {
+		return this.ensureSession(createIfNeeded);
 	}
 
 	async getSubscription(cached = false): Promise<Subscription> {
@@ -228,8 +187,23 @@ export class SubscriptionService implements Disposable {
 	}
 
 	@debug()
-	learn(openToSide: boolean = true): void {
-		void openWalkthrough(this.container.context.extension.id, 'gitlens.plus', undefined, openToSide);
+	async learnAboutPreviewOrTrial() {
+		const subscription = await this.getSubscription();
+		if (subscription.state === SubscriptionState.FreeInPreviewTrial) {
+			void openWalkthrough(
+				this.container.context.extension.id,
+				'gitlens.welcome',
+				'gitlens.welcome.preview',
+				false,
+			);
+		} else if (subscription.state === SubscriptionState.FreePlusInTrial) {
+			void openWalkthrough(
+				this.container.context.extension.id,
+				'gitlens.welcome',
+				'gitlens.welcome.trial',
+				false,
+			);
+		}
 	}
 
 	@log()
@@ -237,8 +211,8 @@ export class SubscriptionService implements Disposable {
 		if (!(await ensurePlusFeaturesEnabled())) return false;
 
 		// Abort any waiting authentication to ensure we can start a new flow
-		await this.container.subscriptionAuthentication.abort();
-		void this.showHomeView();
+		await this.container.accountAuthentication.abort();
+		void this.showAccountView();
 
 		const session = await this.ensureSession(true);
 		const loggedIn = Boolean(session);
@@ -252,7 +226,7 @@ export class SubscriptionService implements Disposable {
 				const confirm: MessageItem = { title: 'Resend Verification', isCloseAffordance: true };
 				const cancel: MessageItem = { title: 'Cancel' };
 				const result = await window.showInformationMessage(
-					`Before you can access ${effective.name}, you must verify your email address.`,
+					`You must verify your email before you can access ${effective.name}.`,
 					confirm,
 					cancel,
 				);
@@ -268,7 +242,7 @@ export class SubscriptionService implements Disposable {
 				const result = await window.showInformationMessage(
 					`Welcome to ${
 						effective.name
-					} (Trial). You now have additional access to GitLens+ features on private repos for ${pluralize(
+					} (Trial). You can now try Pro features on privately hosted repos for ${pluralize(
 						'more day',
 						remaining ?? 0,
 					)}.`,
@@ -278,16 +252,16 @@ export class SubscriptionService implements Disposable {
 				);
 
 				if (result === learn) {
-					this.learn();
+					void this.learnAboutPreviewOrTrial();
 				}
 			} else if (isSubscriptionPaid(this._subscription)) {
 				void window.showInformationMessage(
-					`Welcome to ${actual.name}. You now have additional access to GitLens+ features on private repos.`,
+					`Welcome to ${actual.name}. You can now use Pro features on privately hosted repos.`,
 					'OK',
 				);
 			} else {
 				void window.showInformationMessage(
-					`Welcome to ${actual.name}. You have access to GitLens+ features on local & public repos.`,
+					`Welcome to ${actual.name}. You can use Pro features on local & publicly hosted repos.`,
 					'OK',
 				);
 			}
@@ -301,22 +275,21 @@ export class SubscriptionService implements Disposable {
 	}
 
 	private async logoutCore(reset: boolean = false): Promise<void> {
+		this._lastValidatedDate = undefined;
 		if (this._validationTimer != null) {
 			clearInterval(this._validationTimer);
 			this._validationTimer = undefined;
 		}
 
-		await this.container.subscriptionAuthentication.abort();
+		await this.container.accountAuthentication.abort();
 
 		this._sessionPromise = undefined;
 		if (this._session != null) {
-			void this.container.subscriptionAuthentication.removeSession(this._session.id);
+			void this.container.accountAuthentication.removeSession(this._session.id);
 			this._session = undefined;
 		} else {
 			// Even if we don't have a session, make sure to remove any other matching sessions
-			void this.container.subscriptionAuthentication.removeSessionsByScopes(
-				SubscriptionService.authenticationScopes,
-			);
+			void this.container.accountAuthentication.removeSessionsByScopes(authenticationProviderScopes);
 		}
 
 		if (reset && this.container.debugging) {
@@ -331,6 +304,7 @@ export class SubscriptionService implements Disposable {
 				actual: getSubscriptionPlan(
 					SubscriptionPlanId.Free,
 					false,
+					0,
 					undefined,
 					this._subscription.plan?.actual?.startedOn != null
 						? new Date(this._subscription.plan.actual.startedOn)
@@ -339,6 +313,7 @@ export class SubscriptionService implements Disposable {
 				effective: getSubscriptionPlan(
 					SubscriptionPlanId.Free,
 					false,
+					0,
 					undefined,
 					this._subscription.plan?.effective?.startedOn != null
 						? new Date(this._subscription.plan.actual.startedOn)
@@ -351,7 +326,7 @@ export class SubscriptionService implements Disposable {
 
 	@log()
 	manage(): void {
-		void env.openExternal(this.baseAccountUri);
+		void env.openExternal(this.connection.getAccountsUri());
 	}
 
 	@log()
@@ -361,11 +336,9 @@ export class SubscriptionService implements Disposable {
 		if (this._subscription.account == null) {
 			this.showPlans();
 		} else {
-			void env.openExternal(
-				Uri.joinPath(this.baseAccountUri, 'purchase-license').with({ query: 'product=gitlens&license=PRO' }),
-			);
+			void env.openExternal(this.connection.getAccountsUri('subscription', 'product=gitlens&license=PRO'));
 		}
-		await this.showHomeView();
+		await this.showAccountView();
 	}
 
 	@gate()
@@ -375,22 +348,20 @@ export class SubscriptionService implements Disposable {
 
 		const scope = getLogScope();
 
-		void this.showHomeView(true);
+		void this.showAccountView(true);
 
 		const session = await this.ensureSession(false);
 		if (session == null) return false;
 
 		try {
-			const rsp = await fetch(Uri.joinPath(this.baseApiUri, 'resend-email').toString(), {
-				method: 'POST',
-				agent: getProxyAgent(),
-				headers: {
-					Authorization: `Bearer ${session.accessToken}`,
-					'User-Agent': userAgent,
-					'Content-Type': 'application/json',
+			const rsp = await this.connection.fetchApi(
+				'resend-email',
+				{
+					method: 'POST',
+					body: JSON.stringify({ id: session.account.id }),
 				},
-				body: JSON.stringify({ id: session.account.id }),
-			});
+				session.accessToken,
+			);
 
 			if (!rsp.ok) {
 				debugger;
@@ -414,7 +385,7 @@ export class SubscriptionService implements Disposable {
 			);
 
 			if (result === confirm) {
-				await this.validate();
+				await this.validate({ force: true });
 				return true;
 			}
 		} catch (ex) {
@@ -428,16 +399,16 @@ export class SubscriptionService implements Disposable {
 	}
 
 	@log()
-	async showHomeView(silent: boolean = false): Promise<void> {
+	async showAccountView(silent: boolean = false): Promise<void> {
 		if (silent && !configuration.get('plusFeatures.enabled', undefined, true)) return;
 
-		if (!this.container.homeView.visible) {
-			await executeCommand(Commands.ShowHomeView);
+		if (!this.container.accountView.visible) {
+			await executeCommand(Commands.ShowAccountView);
 		}
 	}
 
 	private showPlans(): void {
-		void env.openExternal(Uri.joinPath(this.baseSiteUri, 'gitlens/pricing'));
+		void env.openExternal(this.connection.getSiteUri('gitlens/pricing'));
 	}
 
 	@gate()
@@ -447,13 +418,13 @@ export class SubscriptionService implements Disposable {
 
 		let { plan, previewTrial } = this._subscription;
 		if (previewTrial != null) {
-			void this.showHomeView();
+			void this.showAccountView();
 
 			if (!silent && plan.effective.id === SubscriptionPlanId.Free) {
-				const confirm: MessageItem = { title: 'Extend Your Trial', isCloseAffordance: true };
+				const confirm: MessageItem = { title: 'Start Free GitKraken Trial', isCloseAffordance: true };
 				const cancel: MessageItem = { title: 'Cancel' };
 				const result = await window.showInformationMessage(
-					'Your 3-day trial has ended.\nExtend your GitLens Pro trial to continue to use GitLens+ features on private repos, free for an additional 7-days.',
+					'Your 3-day Pro preview has ended, start a free GitKraken trial to get an additional 7 days.\n\n✨ A trial or paid plan is required to use Pro features on privately hosted repos.',
 					{ modal: true },
 					confirm,
 					cancel,
@@ -467,9 +438,12 @@ export class SubscriptionService implements Disposable {
 			return;
 		}
 
+		// Don't overwrite a trial that is already in progress
+		if (isSubscriptionInProTrial(this._subscription)) return;
+
 		const startedOn = new Date();
 
-		let days;
+		let days: number;
 		let expiresOn = new Date(startedOn);
 		if (!this.container.debugging) {
 			// Normalize the date to just before midnight on the same day
@@ -490,30 +464,34 @@ export class SubscriptionService implements Disposable {
 			...this._subscription,
 			plan: {
 				...this._subscription.plan,
-				effective: getSubscriptionPlan(SubscriptionPlanId.Pro, false, undefined, startedOn, expiresOn),
+				effective: getSubscriptionPlan(SubscriptionPlanId.Pro, false, 0, undefined, startedOn, expiresOn),
 			},
 			previewTrial: previewTrial,
 		});
 
 		if (!silent) {
-			const confirm: MessageItem = { title: 'OK', isCloseAffordance: true };
-			const learn: MessageItem = { title: 'Learn More' };
-			const result = await window.showInformationMessage(
-				`You have started a ${days}-day GitLens Pro trial of GitLens+ features on private repos.`,
-				{ modal: true },
-				confirm,
-				learn,
-			);
+			setTimeout(async () => {
+				const confirm: MessageItem = { title: 'OK', isCloseAffordance: true };
+				const learn: MessageItem = { title: 'Learn More' };
+				const result = await window.showInformationMessage(
+					`You can now preview Pro features for ${pluralize(
+						'day',
+						days,
+					)}. After which, you can start a free GitKraken trial for an additional 7 days.`,
+					confirm,
+					learn,
+				);
 
-			if (result === learn) {
-				this.learn();
-			}
+				if (result === learn) {
+					void this.learnAboutPreviewOrTrial();
+				}
+			}, 1);
 		}
 	}
 
 	@gate()
 	@log()
-	async validate(): Promise<void> {
+	async validate(options?: { force?: boolean }): Promise<void> {
 		const scope = getLogScope();
 
 		const session = await this.ensureSession(false);
@@ -523,17 +501,30 @@ export class SubscriptionService implements Disposable {
 		}
 
 		try {
-			await this.checkInAndValidate(session);
+			await this.checkInAndValidate(session, options);
 		} catch (ex) {
 			Logger.error(ex, scope);
 			debugger;
 		}
 	}
 
-	private _lastCheckInDate: Date | undefined;
+	private _lastValidatedDate: Date | undefined;
 	@gate<SubscriptionService['checkInAndValidate']>(s => s.account.id)
-	private async checkInAndValidate(session: AuthenticationSession, showSlowProgress: boolean = false): Promise<void> {
-		if (!showSlowProgress) return this.checkInAndValidateCore(session);
+	private async checkInAndValidate(
+		session: AuthenticationSession,
+		options?: { force?: boolean; showSlowProgress?: boolean },
+	): Promise<void> {
+		// Only check in if we haven't in the last 12 hours
+		if (
+			!options?.force &&
+			this._lastValidatedDate != null &&
+			Date.now() - this._lastValidatedDate.getTime() < 12 * 60 * 60 * 1000 &&
+			!isSubscriptionExpired(this._subscription)
+		) {
+			return;
+		}
+
+		if (!options?.showSlowProgress) return this.checkInAndValidateCore(session);
 
 		const validating = this.checkInAndValidateCore(session);
 		const result = await Promise.race([
@@ -545,16 +536,17 @@ export class SubscriptionService implements Disposable {
 			await window.withProgress(
 				{
 					location: ProgressLocation.Notification,
-					title: 'Validating your GitLens+ account...',
+					title: 'Validating your GitKraken account...',
 				},
 				() => validating,
 			);
 		}
 	}
 
-	@debug<SubscriptionService['checkInAndValidate']>({ args: { 0: s => s?.account.label } })
+	@debug<SubscriptionService['checkInAndValidateCore']>({ args: { 0: s => s?.account.label } })
 	private async checkInAndValidateCore(session: AuthenticationSession): Promise<void> {
 		const scope = getLogScope();
+		this._lastValidatedDate = undefined;
 
 		try {
 			const checkInData = {
@@ -570,16 +562,14 @@ export class SubscriptionService implements Disposable {
 				previewExpiresOn: this._subscription.previewTrial?.expiresOn,
 			};
 
-			const rsp = await fetch(Uri.joinPath(this.baseApiUri, 'gitlens/checkin').toString(), {
-				method: 'POST',
-				agent: getProxyAgent(),
-				headers: {
-					Authorization: `Bearer ${session.accessToken}`,
-					'User-Agent': userAgent,
-					'Content-Type': 'application/json',
+			const rsp = await this.connection.fetchApi(
+				'gitlens/checkin',
+				{
+					method: 'POST',
+					body: JSON.stringify(checkInData),
 				},
-				body: JSON.stringify(checkInData),
-			});
+				session.accessToken,
+			);
 
 			if (!rsp.ok) {
 				throw new AccountValidationError('Unable to validate account', undefined, rsp.status, rsp.statusText);
@@ -587,7 +577,6 @@ export class SubscriptionService implements Disposable {
 
 			const data: GKLicenseInfo = await rsp.json();
 			this.validateSubscription(data);
-			this._lastCheckInDate = new Date();
 		} catch (ex) {
 			Logger.error(ex, scope);
 			debugger;
@@ -605,11 +594,14 @@ export class SubscriptionService implements Disposable {
 		}
 
 		// Check 4 times a day to ensure we validate at least once a day
-		this._validationTimer = setInterval(() => {
-			if (this._lastCheckInDate == null || this._lastCheckInDate.getDate() !== new Date().getDate()) {
-				void this.ensureSession(false, true);
-			}
-		}, 1000 * 60 * 60 * 6);
+		this._validationTimer = setInterval(
+			() => {
+				if (this._lastValidatedDate == null || this._lastValidatedDate.getDate() !== new Date().getDate()) {
+					void this.ensureSession(false, true);
+				}
+			},
+			6 * 60 * 60 * 1000,
+		);
 	}
 
 	@debug()
@@ -642,6 +634,7 @@ export class SubscriptionService implements Disposable {
 			actual = getSubscriptionPlan(
 				convertLicenseTypeToPlanId(licenseType),
 				isBundleLicenseType(licenseType),
+				license.reactivationCount ?? 0,
 				license.organizationId,
 				new Date(license.latestStartDate),
 				new Date(license.latestEndDate),
@@ -653,8 +646,13 @@ export class SubscriptionService implements Disposable {
 			actual = getSubscriptionPlan(
 				SubscriptionPlanId.FreePlus,
 				false,
+				0,
 				undefined,
-				data.user.firstGitLensCheckIn != null ? new Date(data.user.firstGitLensCheckIn) : undefined,
+				data.user.firstGitLensCheckIn != null
+					? new Date(data.user.firstGitLensCheckIn)
+					: data.user.createdDate != null
+					? new Date(data.user.createdDate)
+					: undefined,
 			);
 		}
 
@@ -674,6 +672,7 @@ export class SubscriptionService implements Disposable {
 			effective = getSubscriptionPlan(
 				convertLicenseTypeToPlanId(licenseType),
 				isBundleLicenseType(licenseType),
+				license.reactivationCount ?? 0,
 				license.organizationId,
 				new Date(license.latestStartDate),
 				new Date(license.latestEndDate),
@@ -681,20 +680,22 @@ export class SubscriptionService implements Disposable {
 			);
 		}
 
-		if (effective == null) {
-			effective = { ...actual };
-		} else if (getSubscriptionPlanPriority(actual.id) >= getSubscriptionPlanPriority(effective.id)) {
+		if (effective == null || getSubscriptionPlanPriority(actual.id) >= getSubscriptionPlanPriority(effective.id)) {
 			effective = { ...actual };
 		}
 
-		this.changeSubscription({
-			...this._subscription,
-			plan: {
-				actual: actual,
-				effective: effective,
+		this._lastValidatedDate = new Date();
+		this.changeSubscription(
+			{
+				...this._subscription,
+				plan: {
+					actual: actual,
+					effective: effective,
+				},
+				account: account,
 			},
-			account: account,
-		});
+			{ store: true },
+		);
 	}
 
 	private _sessionPromise: Promise<AuthenticationSession | null> | undefined;
@@ -736,14 +737,10 @@ export class SubscriptionService implements Disposable {
 		let session: AuthenticationSession | null | undefined;
 
 		try {
-			session = await authentication.getSession(
-				SubscriptionService.authenticationProviderId,
-				SubscriptionService.authenticationScopes,
-				{
-					createIfNone: createIfNeeded,
-					silent: !createIfNeeded,
-				},
-			);
+			session = await authentication.getSession(authenticationProviderId, authenticationProviderScopes, {
+				createIfNone: createIfNeeded,
+				silent: !createIfNeeded,
+			});
 		} catch (ex) {
 			session = null;
 
@@ -756,11 +753,6 @@ export class SubscriptionService implements Disposable {
 			Logger.error(ex, scope);
 		}
 
-		// If we didn't find a session, check if we could migrate one from the GK auth provider
-		if (session === undefined) {
-			session = await this.container.subscriptionAuthentication.tryMigrateSession();
-		}
-
 		if (session == null) {
 			Logger.debug(scope, 'No valid session was found');
 			await this.logoutCore();
@@ -768,7 +760,7 @@ export class SubscriptionService implements Disposable {
 		}
 
 		try {
-			await this.checkInAndValidate(session, createIfNeeded);
+			await this.checkInAndValidate(session, { showSlowProgress: createIfNeeded, force: createIfNeeded });
 		} catch (ex) {
 			Logger.error(ex, scope);
 			debugger;
@@ -803,7 +795,7 @@ export class SubscriptionService implements Disposable {
 						queueMicrotask(async () => {
 							const confirm: MessageItem = { title: 'Retry Sign In' };
 							const result = await window.showErrorMessage(
-								`Unable to sign in to your (${name}) GitLens+ account. Please try again. If this issue persists, please contact support.${
+								`Unable to sign in to your (${name}) GitKraken account. Please try again. If this issue persists, please contact support.${
 									unauthorized ? '' : ` Error=${ex.message}`
 								}`,
 								confirm,
@@ -819,7 +811,7 @@ export class SubscriptionService implements Disposable {
 
 					// if ((ex.original as any)?.code !== 'ENOTFOUND') {
 					// 	void window.showErrorMessage(
-					// 		`Unable to sign in to your (${name}) GitLens+ account right now. Please try again in a few minutes. If this issue persists, please contact support. Error=${ex.message}`,
+					// 		`Unable to sign in to your (${name}) GitKraken account right now. Please try again in a few minutes. If this issue persists, please contact support. Error=${ex.message}`,
 					// 		'OK',
 					// 	);
 					// }
@@ -833,13 +825,13 @@ export class SubscriptionService implements Disposable {
 	@debug()
 	private changeSubscription(
 		subscription: Optional<Subscription, 'state'> | undefined,
-		silent: boolean = false,
+		options?: { silent?: boolean; store?: boolean },
 	): void {
 		if (subscription == null) {
 			subscription = {
 				plan: {
-					actual: getSubscriptionPlan(SubscriptionPlanId.Free, false, undefined),
-					effective: getSubscriptionPlan(SubscriptionPlanId.Free, false, undefined),
+					actual: getSubscriptionPlan(SubscriptionPlanId.Free, false, 0, undefined),
+					effective: getSubscriptionPlan(SubscriptionPlanId.Free, false, 0, undefined),
 				},
 				account: undefined,
 				state: SubscriptionState.Free,
@@ -870,6 +862,7 @@ export class SubscriptionService implements Disposable {
 					effective: getSubscriptionPlan(
 						SubscriptionPlanId.Pro,
 						false,
+						0,
 						undefined,
 						new Date(subscription.previewTrial.startedOn),
 						new Date(subscription.previewTrial.expiresOn),
@@ -886,7 +879,12 @@ export class SubscriptionService implements Disposable {
 		const matches = previous != null && JSON.stringify(previous) === JSON.stringify(subscription);
 
 		// If the previous and new subscriptions are exactly the same, kick out
-		if (matches) return;
+		if (matches) {
+			if (options?.store) {
+				void this.storeSubscription(subscription);
+			}
+			return;
+		}
 
 		queueMicrotask(() => {
 			let data = flattenSubscription(subscription);
@@ -905,19 +903,7 @@ export class SubscriptionService implements Disposable {
 		this._subscription = subscription;
 		this._etag = Date.now();
 
-		setTimeout(() => {
-			if (
-				subscription?.account != null &&
-				subscription.plan.actual.id === SubscriptionPlanId.Pro &&
-				!subscription.plan.actual.bundle &&
-				new Date(subscription.plan.actual.startedOn) >= new Date('2022-02-28T00:00:00.000Z') &&
-				new Date(subscription.plan.actual.startedOn) <= new Date('2022-04-31T00:00:00.000Z')
-			) {
-				void showRenewalDiscountNotification(this.container, subscription);
-			}
-		}, 5000);
-
-		if (!silent) {
+		if (!options?.silent) {
 			this.updateContext();
 
 			if (previous != null) {
@@ -929,7 +915,15 @@ export class SubscriptionService implements Disposable {
 	private getStoredSubscription(): Subscription | undefined {
 		const storedSubscription = this.container.storage.get('premium:subscription');
 
-		const subscription = storedSubscription?.data;
+		let lastValidatedAt: number | undefined;
+		let subscription: Subscription | undefined;
+		if (storedSubscription?.data != null) {
+			({ lastValidatedAt, ...subscription } = storedSubscription.data);
+			this._lastValidatedDate = lastValidatedAt != null ? new Date(lastValidatedAt) : undefined;
+		} else {
+			subscription = undefined;
+		}
+
 		if (subscription != null) {
 			// Migrate the plan names to the latest names
 			(subscription.plan.actual as Mutable<Subscription['plan']['actual']>).name = getSubscriptionPlanName(
@@ -946,7 +940,7 @@ export class SubscriptionService implements Disposable {
 	private async storeSubscription(subscription: Subscription): Promise<void> {
 		return this.container.storage.store('premium:subscription', {
 			v: 1,
-			data: subscription,
+			data: { ...subscription, lastValidatedAt: this._lastValidatedDate?.getTime() },
 		});
 	}
 
@@ -961,7 +955,6 @@ export class SubscriptionService implements Disposable {
 
 		if (this._cancellationSource != null) {
 			this._cancellationSource.cancel();
-			this._cancellationSource.dispose();
 		}
 		this._cancellationSource = new CancellationTokenSource();
 
@@ -973,8 +966,8 @@ export class SubscriptionService implements Disposable {
 			state,
 		} = this._subscription;
 
-		void setContext(ContextKeys.Plus, actual.id != SubscriptionPlanId.Free ? actual.id : undefined);
-		void setContext(ContextKeys.PlusState, state);
+		void setContext('gitlens:plus', actual.id != SubscriptionPlanId.Free ? actual.id : undefined);
+		void setContext('gitlens:plus:state', state);
 	}
 
 	private async updateAccessContext(cancellation: CancellationToken): Promise<void> {
@@ -1003,15 +996,16 @@ export class SubscriptionService implements Disposable {
 			}
 		}
 
-		void setContext(ContextKeys.PlusEnabled, Boolean(allowed) || plusFeatures);
-		void setContext(ContextKeys.PlusRequired, allowed === false);
-		void setContext(ContextKeys.PlusDisallowedRepos, disallowedRepos);
+		void setContext('gitlens:plus:enabled', Boolean(allowed) || plusFeatures);
+		void setContext('gitlens:plus:required', allowed === false);
+		void setContext('gitlens:plus:disallowedRepos', disallowedRepos);
 	}
 
 	private updateStatusBar(): void {
 		const {
 			account,
 			plan: { effective },
+			state,
 		} = this._subscription;
 
 		if (effective.id === SubscriptionPlanId.Free) {
@@ -1035,26 +1029,37 @@ export class SubscriptionService implements Disposable {
 			);
 		}
 
-		this._statusBarSubscription.name = 'GitLens+ Subscription';
-		this._statusBarSubscription.command = Commands.ShowHomeView;
+		this._statusBarSubscription.name = 'GitKraken Subscription';
+		this._statusBarSubscription.command = Commands.ShowAccountView;
 
 		if (account?.verified === false) {
 			this._statusBarSubscription.text = `$(warning) ${effective.name} (Unverified)`;
-			this._statusBarSubscription.backgroundColor = new ThemeColor('statusBarItem.warningBackground');
+			this._statusBarSubscription.backgroundColor = new ThemeColor(
+				'statusBarItem.warningBackground' satisfies CoreColors,
+			);
 			this._statusBarSubscription.tooltip = new MarkdownString(
 				trial
-					? `**Please verify your email**\n\nBefore you can start your **${effective.name}** trial, please verify your email address.\n\nClick for details`
-					: `**Please verify your email**\n\nBefore you can also use GitLens+ features on private repos, please verify your email address.\n\nClick for details`,
+					? `**Please verify your email**\n\nYou must verify your email before you can start your **${effective.name}** trial.\n\nClick for details`
+					: `**Please verify your email**\n\nYou must verify your email before you can use Pro features on privately hosted repos.\n\nClick for details`,
 				true,
 			);
 		} else {
 			const remaining = getSubscriptionTimeRemaining(this._subscription, 'days');
+			const isReactivatedTrial =
+				state === SubscriptionState.FreePlusInTrial && effective.trialReactivationCount > 0;
 
 			this._statusBarSubscription.text = `${effective.name} (Trial)`;
 			this._statusBarSubscription.tooltip = new MarkdownString(
-				`You have ${pluralize('day', remaining ?? 0)} left in your **${
-					effective.name
-				}** trial, which gives you additional access to GitLens+ features on private repos.\n\nClick for details`,
+				`${
+					isReactivatedTrial
+						? `[See what's new](https://help.gitkraken.com/gitlens/gitlens-release-notes-current/) with
+			${pluralize('day', remaining ?? 0, {
+				infix: ' more ',
+			})}
+			in your **${effective.name}** trial.`
+						: `You have ${pluralize('day', remaining ?? 0)} remaining in your **${effective.name}** trial.`
+				} Once your trial ends, you'll need a paid plan to continue using ✨ features.\n\nTry our
+			[other developer tools](https://www.gitkraken.com/suite) also included in your trial.`,
 				true,
 			);
 		}
@@ -1106,6 +1111,7 @@ interface GKLicense {
 	readonly latestStartDate: string;
 	readonly latestEndDate: string;
 	readonly organizationId: string | undefined;
+	readonly reactivationCount?: number;
 }
 
 type GKLicenseType =
@@ -1118,7 +1124,12 @@ type GKLicenseType =
 	| 'bundle-teams'
 	| 'bundle-hosted-enterprise'
 	| 'bundle-self-hosted-enterprise'
-	| 'bundle-standalone-enterprise';
+	| 'bundle-standalone-enterprise'
+	| 'gitkraken_v1-pro'
+	| 'gitkraken_v1-teams'
+	| 'gitkraken_v1-hosted-enterprise'
+	| 'gitkraken_v1-self-hosted-enterprise'
+	| 'gitkraken_v1-standalone-enterprise';
 
 interface GKUser {
 	readonly id: string;
@@ -1133,9 +1144,11 @@ function convertLicenseTypeToPlanId(licenseType: GKLicenseType): SubscriptionPla
 	switch (licenseType) {
 		case 'gitlens-pro':
 		case 'bundle-pro':
+		case 'gitkraken_v1-pro':
 			return SubscriptionPlanId.Pro;
 		case 'gitlens-teams':
 		case 'bundle-teams':
+		case 'gitkraken_v1-teams':
 			return SubscriptionPlanId.Teams;
 		case 'gitlens-hosted-enterprise':
 		case 'gitlens-self-hosted-enterprise':
@@ -1143,6 +1156,9 @@ function convertLicenseTypeToPlanId(licenseType: GKLicenseType): SubscriptionPla
 		case 'bundle-hosted-enterprise':
 		case 'bundle-self-hosted-enterprise':
 		case 'bundle-standalone-enterprise':
+		case 'gitkraken_v1-hosted-enterprise':
+		case 'gitkraken_v1-self-hosted-enterprise':
+		case 'gitkraken_v1-standalone-enterprise':
 			return SubscriptionPlanId.Enterprise;
 		default:
 			return SubscriptionPlanId.FreePlus;
@@ -1175,43 +1191,7 @@ function licenseStatusPriority(status: GKLicense['latestStatus']): number {
 		case 'canceled':
 		case 'non_renewing':
 			return 0;
+		default:
+			return -200;
 	}
-}
-
-async function showRenewalDiscountNotification(
-	container: Container,
-	subscription: Optional<Subscription, 'state'>,
-): Promise<void> {
-	if (container.storage.get('plus:renewalDiscountNotificationShown', false)) return;
-
-	void container.storage.store('plus:renewalDiscountNotificationShown', true);
-
-	if (subscription.plan.effective.cancelled) {
-		const supportUrl = `https://help.gitkraken.com/gitlens/gl-contact-support/?email=${encodeURIComponent(
-			subscription.account!.email!,
-		)}&subject=${encodeURIComponent('GitLens Pro Reactivation Discount')}&content=${encodeURIComponent(
-			'I would like to reactivate my GitLens Pro subscription at the discounted 60% off rate.',
-		)}&issue_category__customer_facing_field_=Billing`;
-
-		const support = { title: 'Contact Support' };
-		const result = await showMessage(
-			'info',
-			`While we are sorry to see that you have cancelled your GitLens+ subscription, we'd like to offer to renew your subscription at your original rate — 60% off as a thank you for being an early adopter of GitLens+. If you'd like to take advantage of this offer, please [Contact Support](${supportUrl}).`,
-			undefined,
-			undefined,
-			support,
-		);
-
-		if (result === support) {
-			void env.openExternal(Uri.parse(supportUrl));
-		}
-		return;
-	}
-
-	void showMessage(
-		'info',
-		'60% off your GitLens Pro renewal — as a thank you for being an early adopter of GitLens+. So there will be no change to your price for an additional year!',
-		undefined,
-		undefined,
-	);
 }

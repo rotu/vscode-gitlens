@@ -132,7 +132,7 @@ export class GitCommandsCommand extends Command {
 
 		let ignoreFocusOut;
 
-		let step: QuickPickStep<QuickPickItem> | QuickInputStep | CustomStep | undefined;
+		let step: QuickPickStep | QuickInputStep | CustomStep | undefined;
 		if (command == null) {
 			step = commandsStep;
 		} else {
@@ -189,9 +189,9 @@ export class GitCommandsCommand extends Command {
 	}
 
 	private async showLoadingIfNeeded(
-		command: QuickCommand<any>,
-		stepPromise: Promise<QuickPickStep<QuickPickItem> | QuickInputStep | CustomStep | undefined>,
-	): Promise<QuickPickStep<QuickPickItem> | QuickInputStep | CustomStep | undefined> {
+		command: QuickCommand,
+		stepPromise: Promise<QuickPickStep | QuickInputStep | CustomStep | undefined>,
+	): Promise<QuickPickStep | QuickInputStep | CustomStep | undefined> {
 		const stepOrTimeout = await Promise.race([
 			stepPromise,
 			new Promise<typeof showLoadingSymbol>(resolve => setTimeout(resolve, 250, showLoadingSymbol)),
@@ -206,9 +206,9 @@ export class GitCommandsCommand extends Command {
 
 		const disposables: Disposable[] = [];
 
-		let step: QuickPickStep<QuickPickItem> | QuickInputStep | CustomStep | undefined;
+		let step: QuickPickStep | QuickInputStep | CustomStep | undefined;
 		try {
-			return await new Promise<QuickPickStep<QuickPickItem> | QuickInputStep | CustomStep | undefined>(
+			return await new Promise<QuickPickStep | QuickInputStep | CustomStep | undefined>(
 				// eslint-disable-next-line no-async-promise-executor
 				async resolve => {
 					disposables.push(quickpick.onDidHide(() => resolve(step)));
@@ -348,9 +348,7 @@ export class GitCommandsCommand extends Command {
 					}
 				};
 
-				const mapping: KeyMapping = {
-					left: { onDidPressKey: goBack },
-				};
+				const mapping: KeyMapping = {};
 				if (step.onDidPressKey != null && step.keys != null && step.keys.length !== 0) {
 					for (const key of step.keys) {
 						mapping[key] = {
@@ -524,7 +522,11 @@ export class GitCommandsCommand extends Command {
 
 				disposables.push(
 					scope,
-					quickpick.onDidHide(() => resolve(undefined)),
+					quickpick.onDidHide(() => {
+						if (step.frozen) return;
+
+						resolve(undefined);
+					}),
 					quickpick.onDidTriggerItemButton(async e => {
 						if ((await step.onDidClickItemButton?.(quickpick, e.button, e.item)) === true) {
 							resolve(await this.nextStep(commandsStep.command!, [e.item], quickpick));

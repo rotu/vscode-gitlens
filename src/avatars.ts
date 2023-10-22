@@ -1,12 +1,11 @@
 import { EventEmitter, Uri } from 'vscode';
 import { md5 } from '@env/crypto';
-import { GravatarDefaultStyle } from './config';
-import { ContextKeys } from './constants';
+import type { GravatarDefaultStyle } from './config';
+import type { StoredAvatar } from './constants';
 import { Container } from './container';
-import { getContext } from './context';
 import { getGitHubNoReplyAddressParts } from './git/remotes/github';
-import type { StoredAvatar } from './storage';
 import { configuration } from './system/configuration';
+import { getContext } from './system/context';
 import { debounce } from './system/function';
 import { filterMap } from './system/iterable';
 import { base64, equalsIgnoreCase } from './system/string';
@@ -126,7 +125,7 @@ function getAvatarUriCore(
 	const avatar = createOrUpdateAvatar(key, email, size, hash, options?.defaultStyle);
 	if (avatar.uri != null) return avatar.uri;
 
-	if (!options?.cached && repoPathOrCommit != null && getContext(ContextKeys.HasConnectedRemotes)) {
+	if (!options?.cached && repoPathOrCommit != null && getContext('gitlens:hasConnectedRemotes')) {
 		let query = avatarQueue.get(key);
 		if (query == null && hasAvatarExpired(avatar)) {
 			query = getAvatarUriFromRemoteProvider(avatar, key, email, repoPathOrCommit, { size: size }).then(
@@ -305,7 +304,7 @@ export function resetAvatarCache(reset: 'all' | 'failed' | 'fallback') {
 let defaultGravatarsStyle: GravatarDefaultStyle | undefined = undefined;
 function getDefaultGravatarStyle() {
 	if (defaultGravatarsStyle == null) {
-		defaultGravatarsStyle = configuration.get('defaultGravatarsStyle', undefined, GravatarDefaultStyle.Robot);
+		defaultGravatarsStyle = configuration.get('defaultGravatarsStyle', undefined, 'robohash');
 	}
 	return defaultGravatarsStyle;
 }

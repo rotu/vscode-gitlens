@@ -1,22 +1,17 @@
 import type { ConfigurationChangeEvent } from 'vscode';
 import { Disposable, languages } from 'vscode';
-import { ContextKeys } from '../constants';
 import type { Container } from '../container';
-import { setContext } from '../context';
 import { configuration } from '../system/configuration';
+import { setContext } from '../system/context';
 import { once } from '../system/event';
 import { Logger } from '../system/logger';
-import type {
-	DocumentBlameStateChangeEvent,
-	DocumentDirtyIdleTriggerEvent,
-	GitDocumentState,
-} from '../trackers/gitDocumentTracker';
-import { GitCodeLensProvider } from './codeLensProvider';
+import type { DocumentBlameStateChangeEvent, DocumentDirtyIdleTriggerEvent } from '../trackers/documentTracker';
+import type { GitDocumentState } from '../trackers/gitDocumentTracker';
 
 export class GitCodeLensController implements Disposable {
 	private _canToggle: boolean = false;
 	private _disposable: Disposable | undefined;
-	private _provider: GitCodeLensProvider | undefined;
+	private _provider: import('./codeLensProvider').GitCodeLensProvider | undefined;
 	private _providerDisposable: Disposable | undefined;
 
 	constructor(private readonly container: Container) {
@@ -43,14 +38,14 @@ export class GitCodeLensController implements Disposable {
 
 			const cfg = configuration.get('codeLens');
 			if (cfg.enabled && (cfg.recentChange.enabled || cfg.authors.enabled)) {
-				this.ensureProvider();
+				void this.ensureProvider();
 			} else {
 				this._providerDisposable?.dispose();
 				this._provider = undefined;
 			}
 
 			this._canToggle = cfg.recentChange.enabled || cfg.authors.enabled;
-			void setContext(ContextKeys.DisabledToggleCodeLens, !this._canToggle);
+			void setContext('gitlens:disabledToggleCodeLens', !this._canToggle);
 		}
 	}
 
@@ -83,10 +78,10 @@ export class GitCodeLensController implements Disposable {
 			return;
 		}
 
-		this.ensureProvider();
+		void this.ensureProvider();
 	}
 
-	private ensureProvider() {
+	private async ensureProvider() {
 		if (this._provider != null) {
 			this._provider.reset();
 
@@ -94,6 +89,8 @@ export class GitCodeLensController implements Disposable {
 		}
 
 		this._providerDisposable?.dispose();
+
+		const { GitCodeLensProvider } = await import(/* webpackChunkName: "codelens" */ './codeLensProvider');
 
 		this._provider = new GitCodeLensProvider(this.container);
 		this._providerDisposable = Disposable.from(

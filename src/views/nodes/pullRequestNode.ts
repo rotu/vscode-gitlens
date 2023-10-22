@@ -1,26 +1,19 @@
 import { MarkdownString, TreeItem, TreeItemCollapsibleState } from 'vscode';
 import { GitUri } from '../../git/gitUri';
-import type { GitBranch } from '../../git/models/branch';
+import { GitBranch } from '../../git/models/branch';
 import type { GitCommit } from '../../git/models/commit';
-import { isCommit } from '../../git/models/commit';
-import { PullRequest, PullRequestState } from '../../git/models/pullRequest';
+import { getIssueOrPullRequestMarkdownIcon, getIssueOrPullRequestThemeIcon } from '../../git/models/issue';
+import type { PullRequest } from '../../git/models/pullRequest';
 import type { ViewsWithCommits } from '../viewBase';
-import { ContextValues, ViewNode } from './viewNode';
+import { ContextValues, getViewNodeId, ViewNode } from './viewNode';
 
-export class PullRequestNode extends ViewNode<ViewsWithCommits> {
-	static key = ':pullrequest';
-	static getId(parent: ViewNode, id: string, ref?: string): string {
-		return `${parent.id}${this.key}(${id}):${ref}`;
-	}
-
-	public readonly pullRequest: PullRequest;
-	private readonly branchOrCommit?: GitBranch | GitCommit;
-	private readonly repoPath: string;
+export class PullRequestNode extends ViewNode<'pullrequest', ViewsWithCommits> {
+	readonly repoPath: string;
 
 	constructor(
 		view: ViewsWithCommits,
 		protected override readonly parent: ViewNode,
-		pullRequest: PullRequest,
+		public readonly pullRequest: PullRequest,
 		branchOrCommitOrRepoPath: GitBranch | GitCommit | string,
 	) {
 		let branchOrCommit;
@@ -32,19 +25,26 @@ export class PullRequestNode extends ViewNode<ViewsWithCommits> {
 			branchOrCommit = branchOrCommitOrRepoPath;
 		}
 
-		super(GitUri.fromRepoPath(repoPath), view, parent);
+		super('pullrequest', GitUri.fromRepoPath(repoPath), view, parent);
 
-		this.branchOrCommit = branchOrCommit;
-		this.pullRequest = pullRequest;
+		if (branchOrCommit != null) {
+			if (branchOrCommit instanceof GitBranch) {
+				this.updateContext({ branch: branchOrCommit });
+			} else {
+				this.updateContext({ commit: branchOrCommit });
+			}
+		}
+
+		this._uniqueId = getViewNodeId(this.type, this.context);
 		this.repoPath = repoPath;
+	}
+
+	override get id(): string {
+		return this._uniqueId;
 	}
 
 	override toClipboard(): string {
 		return this.pullRequest.url;
-	}
-
-	override get id(): string {
-		return PullRequestNode.getId(this.parent, this.pullRequest.id, this.branchOrCommit?.ref);
 	}
 
 	getChildren(): ViewNode[] {
@@ -56,29 +56,27 @@ export class PullRequestNode extends ViewNode<ViewsWithCommits> {
 		item.id = this.id;
 		item.contextValue = ContextValues.PullRequest;
 		item.description = `${this.pullRequest.state}, ${this.pullRequest.formatDateFromNow()}`;
-		item.iconPath = PullRequest.getThemeIcon(this.pullRequest);
+		item.iconPath = getIssueOrPullRequestThemeIcon(this.pullRequest);
 
 		const tooltip = new MarkdownString('', true);
 		tooltip.supportHtml = true;
 		tooltip.isTrusted = true;
 
-		if (isCommit(this.branchOrCommit)) {
+		if (this.context.commit != null) {
 			tooltip.appendMarkdown(
-				`Commit \`$(git-commit) ${this.branchOrCommit.shortSha}\` was introduced by $(git-pull-request) PR #${this.pullRequest.id}\n\n`,
+				`Commit \`$(git-commit) ${this.context.commit.shortSha}\` was introduced by $(git-pull-request) PR #${this.pullRequest.id}\n\n`,
 			);
 		}
 
 		const linkTitle = ` "Open Pull Request \\#${this.pullRequest.id} on ${this.pullRequest.provider.name}"`;
 		tooltip.appendMarkdown(
-			`${PullRequest.getMarkdownIcon(this.pullRequest)} [**${this.pullRequest.title.trim()}**](${
+			`${getIssueOrPullRequestMarkdownIcon(this.pullRequest)} [**${this.pullRequest.title.trim()}**](${
 				this.pullRequest.url
 			}${linkTitle}) \\\n[#${this.pullRequest.id}](${this.pullRequest.url}${linkTitle}) by [@${
 				this.pullRequest.author.name
 			}](${this.pullRequest.author.url} "Open @${this.pullRequest.author.name} on ${
 				this.pullRequest.provider.name
-			}") was ${
-				this.pullRequest.state === PullRequestState.Open ? 'opened' : this.pullRequest.state.toLowerCase()
-			} ${this.pullRequest.formatDateFromNow()}`,
+			}") was ${this.pullRequest.state.toLowerCase()} ${this.pullRequest.formatDateFromNow()}`,
 		);
 
 		item.tooltip = tooltip;
