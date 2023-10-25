@@ -23,5 +23,5 @@ jobs:
               run: yarn run package
             - uses: actions/upload-artifact@v3
               with:
-                name: vsix
-                path: ./${{ env.PACKAGE_NAME }}.vsix
+                  name: vsix
+                  path: ./${{ env.PACKAGE_NAME }}.vsix
