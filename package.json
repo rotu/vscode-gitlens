@@ -3090,12 +3090,19 @@
 						"scope": "window",
 						"order": 40
 					},
+					"gitlens.liveshare.enabled": {
+						"type": "boolean",
+						"default": true,
+						"description": "Specifies whether to enable integration with Visual Studio Live Share",
+						"scope": "window",
+						"order": 50
+					},
 					"gitlens.liveshare.allowGuestAccess": {
 						"type": "boolean",
 						"default": true,
 						"description": "Specifies whether to allow guest access to GitLens features when using Visual Studio Live Share",
 						"scope": "window",
-						"order": 50
+						"order": 51
 					}
 				}
 			},
@@ -4169,18 +4176,20 @@
 					},
 					"gitlens.outputLevel": {
 						"type": "string",
-						"default": "errors",
+						"default": "warn",
 						"enum": [
-							"silent",
-							"errors",
-							"verbose",
+							"off",
+							"error",
+							"warn",
+							"info",
 							"debug"
 						],
 						"enumDescriptions": [
 							"Logs nothing",
 							"Logs only errors",
-							"Logs all errors, warnings, and messages",
-							"Logs all errors, warnings, and messages with extra context useful for debugging"
+							"Logs errors and warnings",
+							"Logs errors, warnings, and messages",
+							"Logs verbose errors, warnings, and messages. Best for issue reporting."
 						],
 						"markdownDescription": "Specifies how much (if any) output will be sent to the GitLens output channel",
 						"scope": "window",
@@ -10481,7 +10490,7 @@
 				},
 				{
 					"command": "gitlens.disableDebugLogging",
-					"when": "config.gitlens.outputLevel != errors"
+					"when": "config.gitlens.outputLevel == debug"
 				},
 				{
 					"command": "gitlens.generateCommitMessage",
@@ -11076,12 +11085,12 @@
 				{
 					"command": "gitlens.views.commits.setShowMergeCommitsOff",
 					"when": "view =~ /^gitlens\\.views\\.commits/ && !gitlens:views:commits:hideMergeCommits",
-					"group": "3_gitlens@0"
+					"group": "3_gitlens@2"
 				},
 				{
 					"command": "gitlens.views.commits.setShowMergeCommitsOn",
 					"when": "view =~ /^gitlens\\.views\\.commits/ && gitlens:views:commits:hideMergeCommits",
-					"group": "3_gitlens@0"
+					"group": "3_gitlens@2"
 				},
 				{
 					"command": "gitlens.views.commits.setFilesLayoutToAuto",
@@ -12182,7 +12191,7 @@
 				},
 				{
 					"submenu": "gitlens/share",
-					"when": "viewItem =~ /gitlens:(branch|commit|compare:results(?!:)|remote|repo-folder|repository|stash|tag|workspace|file\\b(?=.*?\\b\\+committed\\b))\\b/",
+					"when": "viewItem =~ /gitlens:(branch|commit|compare:(branch(?=.*?\\b\\+comparing\\b)|results(?!:))|remote|repo-folder|repository|stash|status:upstream|tag|workspace|file\\b(?=.*?\\b\\+committed\\b))\\b/",
 					"group": "7_gitlens_a_share@1"
 				},
 				{
@@ -13616,22 +13625,22 @@
 			"gitlens/share": [
 				{
 					"command": "gitlens.copyDeepLinkToBranch",
-					"when": "viewItem =~ /gitlens:branch\\b/",
+					"when": "viewItem =~ /gitlens:(branch\\b(?=.*?\\b\\+(remote|tracking)\\b)|status:upstream(?!:none))\\b/",
 					"group": "1_gitlens@50"
 				},
 				{
 					"command": "gitlens.graph.copyDeepLinkToBranch",
-					"when": "webviewItem =~ /gitlens:branch\\b/",
+					"when": "webviewItem =~ /gitlens:branch\\b(?=.*?\\b\\+(remote|tracking)\\b)/",
 					"group": "1_gitlens@50"
 				},
 				{
 					"command": "gitlens.copyRemoteBranchUrl",
-					"when": "gitlens:hasRemotes && viewItem =~ /gitlens:branch\\b/",
+					"when": "gitlens:hasRemotes && viewItem =~ /gitlens:branch\\b(?=.*?\\b\\+(remote|tracking)\\b)/",
 					"group": "2_gitlens@50"
 				},
 				{
 					"command": "gitlens.graph.copyRemoteBranchUrl",
-					"when": "gitlens:hasRemotes && webviewItem =~ /gitlens:branch\\b/",
+					"when": "gitlens:hasRemotes && webviewItem =~ /gitlens:branch\\b(?=.*?\\b\\+(remote|tracking)\\b)/",
 					"group": "2_gitlens@50"
 				},
 				{
@@ -13646,7 +13655,7 @@
 				},
 				{
 					"command": "gitlens.copyDeepLinkToComparison",
-					"when": "viewItem =~ /gitlens:compare:results(?!:)\\b/",
+					"when": "viewItem =~ /gitlens:compare:(branch(?=.*?\\b\\+comparing\\b)|results(?!:))\\b/",
 					"group": "1_gitlens@25"
 				},
 				{
@@ -13686,7 +13695,7 @@
 				},
 				{
 					"command": "gitlens.copyDeepLinkToRepo",
-					"when": "viewItem =~ /gitlens:(remote|repo-folder|repository)\\b/",
+					"when": "viewItem =~ /gitlens:(branch\\b(?=.*?\\b\\+(remote|tracking)\\b)|remote|repo-folder|repository|status:upstream(?!:none))\\b/",
 					"group": "1_gitlens@99"
 				},
 				{
@@ -13701,7 +13710,7 @@
 				},
 				{
 					"command": "gitlens.graph.copyDeepLinkToRepo",
-					"when": "webviewItem =~ /gitlens:branch\\b(?=.*?\\b\\+remote\\b)(?!.*?\\b\\+current\\b)/",
+					"when": "webviewItem =~ /gitlens:branch\\b(?=.*?\\b\\+(remote|tracking)\\b)/",
 					"group": "1_gitlens@99"
 				},
 				{
@@ -15258,8 +15267,8 @@
 		"@octokit/graphql": "7.0.2",
 		"@octokit/request": "8.1.4",
 		"@opentelemetry/api": "1.6.0",
-		"@opentelemetry/exporter-trace-otlp-http": "0.44.0",
-		"@opentelemetry/sdk-trace-base": "1.17.1",
+		"@opentelemetry/exporter-trace-otlp-http": "0.43.0",
+		"@opentelemetry/sdk-trace-base": "1.17.0",
 		"@vscode/codicons": "0.0.33",
 		"@vscode/webview-ui-toolkit": "1.2.2",
 		"ansi-regex": "6.0.1",
@@ -15281,8 +15290,8 @@
 		"@types/react-dom": "17.0.21",
 		"@types/sortablejs": "1.15.4",
 		"@types/vscode": "1.81.0",
-		"@typescript-eslint/eslint-plugin": "6.8.0",
-		"@typescript-eslint/parser": "6.8.0",
+		"@typescript-eslint/eslint-plugin": "6.9.0",
+		"@typescript-eslint/parser": "6.9.0",
 		"@vscode/test-electron": "2.3.5",
 		"@vscode/test-web": "0.0.47",
 		"@vscode/vsce": "2.21.1",
@@ -15302,7 +15311,7 @@
 		"eslint-config-prettier": "9.0.0",
 		"eslint-import-resolver-typescript": "3.6.1",
 		"eslint-plugin-anti-trojan-source": "1.1.1",
-		"eslint-plugin-import": "2.28.1",
+		"eslint-plugin-import": "2.29.0",
 		"eslint-plugin-lit": "1.9.1",
 		"eslint-plugin-wc": "2.0.4",
 		"fantasticon": "1.2.3",

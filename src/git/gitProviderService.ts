@@ -180,6 +180,19 @@ export class GitProviderService implements Disposable {
   get onDidChangeProviders(): Event<GitProvidersChangeEvent> {
     return this._onDidChangeProviders.event;
   }
+
+  @debug<GitProviderService["fireProvidersChanged"]>({
+    args: {
+      0: (added) =>
+        `(${added?.length ?? 0}) ${
+          added?.map((p) => p.descriptor.id).join(", ")
+        }`,
+      1: (removed) =>
+        `(${removed?.length ?? 0}) ${
+          removed?.map((p) => p.descriptor.id).join(", ")
+        }`,
+    },
+  })
   private fireProvidersChanged(added?: GitProvider[], removed?: GitProvider[]) {
     if (this.container.telemetry.enabled) {
       this.container.telemetry.setGlobalAttributes({
@@ -2665,13 +2678,12 @@ export class GitProviderService implements Disposable {
           );
         }
 
-        const autoRepositoryDetection =
-          configuration.getAny<
-            CoreGitConfiguration,
-            boolean | "subFolders" | "openEditors"
-          >(
-            "git.autoRepositoryDetection",
-          ) ?? true;
+        const autoRepositoryDetection = configuration.getAny<
+          CoreGitConfiguration,
+          boolean | "subFolders" | "openEditors"
+        >(
+          "git.autoRepositoryDetection",
+        ) ?? true;
 
         const closed = options?.closeOnOpen ??
           (autoRepositoryDetection !== true &&
@@ -2719,7 +2731,9 @@ export class GitProviderService implements Disposable {
 
   @log<GitProviderService["getOrOpenRepositoryForEditor"]>({
     args: {
-      0: (e) => (e != null
+      0: (
+        e,
+      ) => (e != null
         ? `TextEditor(${Logger.toLoggable(e.document.uri)})`
         : undefined),
     },
@@ -2934,7 +2948,9 @@ export class GitProviderService implements Disposable {
   @log<GitProviderService["isRepositoryForEditor"]>({
     args: {
       0: (r) => r.uri.toString(true),
-      1: (e) => (e != null
+      1: (
+        e,
+      ) => (e != null
         ? `TextEditor(${Logger.toLoggable(e.document.uri)})`
         : undefined),
     },
