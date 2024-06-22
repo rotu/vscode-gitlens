@@ -1,17 +1,16 @@
 import type { TextEditor, Uri } from 'vscode';
 import { Range } from 'vscode';
-import { UriComparer } from '../comparers';
-import { BranchSorting, TagSorting } from '../configuration';
 import { Commands, GlyphChars } from '../constants';
 import type { Container } from '../container';
 import { GitUri } from '../git/gitUri';
 import { getBranchNameWithoutRemote, getRemoteNameFromBranchName } from '../git/models/branch';
 import { isSha } from '../git/models/reference';
 import { RemoteResourceType } from '../git/models/remoteResource';
-import { Logger } from '../logger';
 import { showGenericErrorMessage } from '../messages';
 import { showReferencePicker } from '../quickpicks/referencePicker';
 import { command, executeCommand } from '../system/command';
+import { UriComparer } from '../system/comparers';
+import { Logger } from '../system/logger';
 import { pad, splitSingle } from '../system/string';
 import { StatusFileNode } from '../views/nodes/statusFileNode';
 import type { CommandContext } from './base';
@@ -26,6 +25,7 @@ import type { OpenOnRemoteCommandArgs } from './openOnRemote';
 export interface OpenFileOnRemoteCommandArgs {
 	branchOrTag?: string;
 	clipboard?: boolean;
+	line?: number;
 	range?: boolean;
 	sha?: string;
 	pickBranchOrTag?: boolean;
@@ -46,6 +46,10 @@ export class OpenFileOnRemoteCommand extends ActiveEditorCommand {
 
 	protected override async preExecute(context: CommandContext, args?: OpenFileOnRemoteCommandArgs) {
 		let uri = context.uri;
+
+		if (context.type === 'editorLine') {
+			args = { ...args, line: context.line, range: true };
+		}
 
 		if (context.command === Commands.CopyRemoteFileUrlWithoutRange) {
 			args = { ...args, range: false };
@@ -100,7 +104,7 @@ export class OpenFileOnRemoteCommand extends ActiveEditorCommand {
 		}
 
 		if (context.command === Commands.OpenFileOnRemoteFrom || context.command === Commands.CopyRemoteFileUrlFrom) {
-			args = { ...args, pickBranchOrTag: true, range: false };
+			args = { ...args, pickBranchOrTag: true, range: false }; // Override range since it can be wrong at a different commit
 		}
 
 		return this.execute(context.editor, uri, args);
@@ -116,16 +120,22 @@ export class OpenFileOnRemoteCommand extends ActiveEditorCommand {
 		args = { range: true, ...args };
 
 		try {
-			let remotes = await this.container.git.getRemotesWithProviders(gitUri.repoPath);
-			const range =
-				args.range && editor != null && UriComparer.equals(editor.document.uri, uri)
-					? new Range(
-							editor.selection.start.with({ line: editor.selection.start.line + 1 }),
-							editor.selection.end.with({
-								line: editor.selection.end.line + (editor.selection.end.character === 0 ? 0 : 1),
-							}),
-					  )
-					: undefined;
+			let remotes = await this.container.git.getRemotesWithProviders(gitUri.repoPath, { sort: true });
+
+			let range: Range | undefined;
+			if (args.range) {
+				if (editor != null && UriComparer.equals(editor.document.uri, uri)) {
+					range = new Range(
+						editor.selection.start.with({ line: editor.selection.start.line + 1 }),
+						editor.selection.end.with({
+							line: editor.selection.end.line + (editor.selection.end.character === 0 ? 0 : 1),
+						}),
+					);
+				} else if (args.line != null) {
+					range = new Range(args.line + 1, 0, args.line + 1, 0);
+				}
+			}
+
 			let sha = args.sha ?? gitUri.sha;
 
 			if (args.branchOrTag == null && sha != null && !isSha(sha) && remotes.length !== 0) {
@@ -155,14 +165,13 @@ export class OpenFileOnRemoteCommand extends ActiveEditorCommand {
 							: `Open File on Remote From${pad(GlyphChars.Dot, 2, 2)}${gitUri.relativePath}`,
 						`Choose a branch or tag to ${args.clipboard ? 'copy' : 'open'} the file revision from`,
 						{
-							allowEnteringRefs: true,
+							allowRevisions: true,
 							autoPick: true,
-							// checkmarks: false,
 							filter: { branches: b => b.remote || b.upstream != null },
 							picked: args.branchOrTag,
 							sort: {
-								branches: { current: true, orderBy: BranchSorting.DateDesc },
-								tags: { orderBy: TagSorting.DateDesc },
+								branches: { current: true, orderBy: 'date:desc' },
+								tags: { orderBy: 'date:desc' },
 							},
 						},
 					);

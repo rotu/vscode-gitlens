@@ -1,10 +1,11 @@
-import { css, customElement, FASTElement, html, observable, ref } from '@microsoft/fast-element';
 import type { Chart, DataItem, RegionOptions } from 'billboard.js';
-import { groupByMap } from '../../../../../system/array';
+import { css, html } from 'lit';
+import { customElement, property, query } from 'lit/decorators.js';
 import { debug } from '../../../../../system/decorators/log';
 import { debounce } from '../../../../../system/function';
-import { first, flatMap, map, some, union } from '../../../../../system/iterable';
-import { pluralize } from '../../../../../system/string';
+import { first, flatMap, groupByMap, map, union } from '../../../../../system/iterable';
+import { capitalize, pluralize } from '../../../../../system/string';
+import { GlElement, observe } from '../../../shared/components/element';
 import { formatDate, formatNumeric, fromNow } from '../../../shared/date';
 
 export interface BranchMarker {
@@ -36,6 +37,7 @@ export type GraphMinimapMarker = BranchMarker | RemoteMarker | StashMarker | Tag
 export interface GraphMinimapSearchResultMarker {
 	type: 'search-result';
 	sha: string;
+	count: number;
 }
 
 export interface GraphMinimapStats {
@@ -53,193 +55,238 @@ export interface GraphMinimapDaySelectedEventDetail {
 	sha?: string;
 }
 
-const template = html<GraphMinimap>`<template>
-	<div id="chart" ${ref('chart')}></div>
-</template>`;
+const markerZOrder = [
+	'marker-result',
+	'marker-head-arrow-left',
+	'marker-head-arrow-right',
+	'marker-head',
+	'marker-upstream',
+	'marker-branch',
+	'marker-stash',
+	'marker-remote',
+	'marker-tag',
+	'visible-area',
+];
 
-const styles = css`
-	:host {
-		display: flex;
-		position: relative;
-		width: 100%;
-		min-height: 24px;
-		height: 40px;
-		background: var(--color-background);
-	}
-
-	#chart {
-		height: 100%;
-		width: 100%;
-		overflow: hidden;
-		position: initial !important;
+declare global {
+	interface HTMLElementTagNameMap {
+		'gl-graph-minimap': GlGraphMinimap;
 	}
 
-	.bb svg {
-		font: 10px var(--font-family);
-		-webkit-tap-highlight-color: rgba(0, 0, 0, 0);
-		transform: translateX(2.5em) rotateY(180deg);
+	interface GlobalEventHandlersEventMap {
+		'gl-graph-minimap-selected': GraphMinimapDaySelectedEvent;
 	}
+}
 
-	.bb-chart {
-		width: 100%;
-		height: 100%;
-	}
+@customElement('gl-graph-minimap')
+export class GlGraphMinimap extends GlElement {
+	static override styles = css`
+		:host {
+			display: flex;
+			position: relative;
+			width: 100%;
+			min-height: 24px;
+			height: 40px;
+			background: var(--color-background);
+		}
 
-	.bb-event-rect {
-		height: calc(100% + 2px);
-		transform: translateY(-5px);
-	}
+		#chart {
+			height: 100%;
+			width: calc(100% - 1rem);
+			overflow: hidden;
+			position: initial !important;
+		}
 
-	/*-- Grid --*/
-	.bb-grid {
-		pointer-events: none;
-	}
+		#spinner {
+			position: absolute;
+			inset: 0;
+			display: flex;
+			justify-content: center;
+			align-items: center;
+			z-index: 1;
+		}
 
-	.bb-xgrid-focus line {
-		stroke: var(--color-graph-minimap-focusLine);
-	}
+		#spinner[aria-hidden='true'] {
+			display: none;
+		}
 
-	/*-- Line --*/
-	.bb path,
-	.bb line {
-		fill: none;
-	}
+		.legend {
+			position: absolute;
+			top: 0;
+			right: 0;
+			bottom: 0;
+			display: flex;
+			align-items: center;
+			z-index: 1;
+			opacity: 0.7;
+			cursor: help;
+		}
 
-	/*-- Point --*/
-	.bb-circle._expanded_ {
-		fill: var(--color-background);
-		opacity: 1 !important;
-		fill-opacity: 1 !important;
-		stroke-opacity: 1 !important;
-		stroke-width: 1px;
-	}
+		.bb svg {
+			font: 10px var(--font-family);
+			-webkit-tap-highlight-color: rgba(0, 0, 0, 0);
+		}
 
-	.bb-selected-circle {
-		fill: var(--color-background);
-		opacity: 1 !important;
-		fill-opacity: 1 !important;
-		stroke-opacity: 1 !important;
-		stroke-width: 2px;
-	}
+		.bb-chart {
+			width: 100%;
+			height: 100%;
+		}
 
-	/*-- Bar --*/
-	.bb-bar {
-		stroke-width: 0;
-	}
-	.bb-bar._expanded_ {
-		fill-opacity: 0.75;
-	}
+		.bb-event-rect {
+			height: calc(100% + 2px);
+			transform: translateY(-5px);
+		}
 
-	/*-- Regions --*/
+		/*-- Grid --*/
+		.bb-grid {
+			pointer-events: none;
+		}
 
-	.bb-regions {
-		pointer-events: none;
-	}
+		.bb-xgrid-focus line {
+			stroke: var(--color-graph-minimap-focusLine);
+		}
 
-	.bb-region > rect:not([x]) {
-		display: none;
-	}
+		/*-- Line --*/
+		.bb path,
+		.bb line {
+			fill: none;
+		}
 
-	.bb-region.visible-area {
-		fill: var(--color-graph-minimap-visibleAreaBackground);
-		transform: translateY(-4px);
-	}
-	.bb-region.visible-area > rect {
-		height: 100%;
-	}
+		/*-- Point --*/
+		.bb-circle._expanded_ {
+			fill: var(--color-background);
+			opacity: 1 !important;
+			fill-opacity: 1 !important;
+			stroke-opacity: 1 !important;
+			stroke-width: 1px;
+		}
 
-	.bb-region.marker-result {
-		fill: var(--color-graph-minimap-marker-highlights);
-		transform: translate(-1px, -4px);
-		z-index: 10;
-	}
-	.bb-region.marker-result > rect {
-		width: 2px;
-		height: 100%;
-	}
+		.bb-selected-circle {
+			fill: var(--color-background);
+			opacity: 1 !important;
+			fill-opacity: 1 !important;
+			stroke-opacity: 1 !important;
+			stroke-width: 2px;
+		}
 
-	.bb-region.marker-head {
-		fill: var(--color-graph-minimap-marker-head);
-		stroke: var(--color-graph-minimap-marker-head);
-		transform: translate(-1px, -4px);
-	}
-	.bb-region.marker-head > rect {
-		width: 1px;
-		height: 100%;
-	}
+		/*-- Bar --*/
+		.bb-bar {
+			stroke-width: 0;
+		}
+		.bb-bar._expanded_ {
+			fill-opacity: 0.75;
+		}
 
-	.bb-region.marker-head-arrow-left {
-		fill: var(--color-graph-minimap-marker-head);
-		stroke: var(--color-graph-minimap-marker-head);
-		transform: translate(-5px, -5px) skewX(45deg);
-	}
-	.bb-region.marker-head-arrow-left > rect {
-		width: 3px;
-		height: 3px;
-	}
+		/*-- Regions --*/
 
-	.bb-region.marker-head-arrow-right {
-		fill: var(--color-graph-minimap-marker-head);
-		stroke: var(--color-graph-minimap-marker-head);
-		transform: translate(1px, -5px) skewX(-45deg);
-	}
-	.bb-region.marker-head-arrow-right > rect {
-		width: 3px;
-		height: 3px;
-	}
+		.bb-regions {
+			pointer-events: none;
+		}
 
-	.bb-region.marker-upstream {
-		fill: var(--color-graph-minimap-marker-upstream);
-		stroke: var(--color-graph-minimap-marker-upstream);
-		transform: translate(-1px, -4px);
-	}
-	.bb-region.marker-upstream > rect {
-		width: 1px;
-		height: 100%;
-	}
+		.bb-region > rect:not([x]) {
+			display: none;
+		}
 
-	.bb-region.marker-branch {
-		fill: var(--color-graph-minimap-marker-local-branches);
-		stroke: var(--color-graph-minimap-marker-local-branches);
-		transform: translate(-2px, 32px);
-	}
-	.bb-region.marker-branch > rect {
-		width: 3px;
-		height: 3px;
-	}
+		.bb-region.visible-area {
+			fill: var(--color-graph-minimap-visibleAreaBackground);
+			/* transform: translateY(-4px); */
+		}
+		.bb-region.visible-area > rect {
+			height: 100%;
+		}
 
-	.bb-region.marker-remote {
-		fill: var(--color-graph-minimap-marker-remote-branches);
-		stroke: var(--color-graph-minimap-marker-remote-branches);
-		transform: translate(-2px, 26px);
-	}
-	.bb-region.marker-remote > rect {
-		width: 3px;
-		height: 3px;
-	}
+		.bb-region.marker-result {
+			fill: var(--color-graph-minimap-marker-highlights);
+			transform: translateX(-1px);
+			z-index: 10;
+		}
+		.bb-region.marker-result > rect {
+			width: 2px;
+			height: 100%;
+		}
 
-	.bb-region.marker-stash {
-		fill: var(--color-graph-minimap-marker-stashes);
-		stroke: var(--color-graph-minimap-marker-stashes);
-		transform: translate(-2px, 32px);
-	}
-	.bb-region.marker-stash > rect {
-		width: 3px;
-		height: 3px;
-	}
+		.bb-region.marker-head {
+			fill: var(--color-graph-minimap-marker-head);
+			stroke: var(--color-graph-minimap-marker-head);
+			transform: translateX(-1px);
+		}
+		.bb-region.marker-head > rect {
+			width: 1px;
+			height: 100%;
+		}
 
-	.bb-region.marker-tag {
-		fill: var(--color-graph-minimap-marker-tags);
-		stroke: var(--color-graph-minimap-marker-tags);
-		transform: translate(-2px, 26px);
-	}
-	.bb-region.marker-tag > rect {
-		width: 3px;
-		height: 3px;
-	}
+		.bb-region.marker-head-arrow-left {
+			fill: var(--color-graph-minimap-marker-head);
+			stroke: var(--color-graph-minimap-marker-head);
+			transform: translate(-5px, -1px) skewX(45deg);
+		}
+		.bb-region.marker-head-arrow-left > rect {
+			width: 3px;
+			height: 3px;
+		}
 
-	/*-- Zoom region --*/
-	/*
+		.bb-region.marker-head-arrow-right {
+			fill: var(--color-graph-minimap-marker-head);
+			stroke: var(--color-graph-minimap-marker-head);
+			transform: translate(1px, -1px) skewX(-45deg);
+		}
+		.bb-region.marker-head-arrow-right > rect {
+			width: 3px;
+			height: 3px;
+		}
+
+		.bb-region.marker-upstream {
+			fill: var(--color-graph-minimap-marker-upstream);
+			stroke: var(--color-graph-minimap-marker-upstream);
+			transform: translateX(-1px);
+		}
+		.bb-region.marker-upstream > rect {
+			width: 1px;
+			height: 100%;
+		}
+
+		.bb-region.marker-branch {
+			fill: var(--color-graph-minimap-marker-local-branches);
+			stroke: var(--color-graph-minimap-marker-local-branches);
+			transform: translate(-2px, 35px);
+		}
+		.bb-region.marker-branch > rect {
+			width: 3px;
+			height: 3px;
+		}
+
+		.bb-region.marker-remote {
+			fill: var(--color-graph-minimap-marker-remote-branches);
+			stroke: var(--color-graph-minimap-marker-remote-branches);
+			transform: translate(-2px, 29px);
+		}
+		.bb-region.marker-remote > rect {
+			width: 3px;
+			height: 3px;
+		}
+
+		.bb-region.marker-stash {
+			fill: var(--color-graph-minimap-marker-stashes);
+			stroke: var(--color-graph-minimap-marker-stashes);
+			transform: translate(-2px, 35px);
+		}
+		.bb-region.marker-stash > rect {
+			width: 3px;
+			height: 3px;
+		}
+
+		.bb-region.marker-tag {
+			fill: var(--color-graph-minimap-marker-tags);
+			stroke: var(--color-graph-minimap-marker-tags);
+			transform: translate(-2px, 29px);
+		}
+		.bb-region.marker-tag > rect {
+			width: 3px;
+			height: 3px;
+		}
+
+		/*-- Zoom region --*/
+		/*
 	:host-context(.vscode-dark) .bb-zoom-brush {
 		fill: white;
 		fill-opacity: 0.2;
@@ -250,15 +297,15 @@ const styles = css`
 	}
 	*/
 
-	/*-- Brush --*/
-	/*
+		/*-- Brush --*/
+		/*
 	.bb-brush .extent {
 		fill-opacity: 0.1;
 	}
 	*/
 
-	/*-- Button --*/
-	/*
+		/*-- Button --*/
+		/*
 	.bb-button {
 		position: absolute;
 		top: 2px;
@@ -283,134 +330,197 @@ const styles = css`
 	}
 	*/
 
-	/*-- Tooltip --*/
-	.bb-tooltip-container {
-		top: unset !important;
-		z-index: 10;
-		user-select: none;
-		min-width: 300px;
-	}
+		/*-- Tooltip --*/
+		.bb-tooltip-container {
+			top: unset !important;
+			z-index: 10;
+			user-select: none;
+			min-width: 300px;
+		}
 
-	.bb-tooltip {
-		display: flex;
-		flex-direction: column;
-		padding: 0.5rem 1rem;
-		background-color: var(--color-hover-background);
-		color: var(--color-hover-foreground);
-		border: 1px solid var(--color-hover-border);
-		box-shadow: 0 2px 8px var(--vscode-widget-shadow);
-		font-size: var(--font-size);
-		opacity: 1;
-		white-space: nowrap;
-	}
+		.bb-tooltip {
+			display: flex;
+			flex-direction: column;
+			padding: 0.5rem 1rem;
+			background-color: var(--color-hover-background);
+			color: var(--color-hover-foreground);
+			border: 1px solid var(--color-hover-border);
+			box-shadow: 0 2px 8px var(--vscode-widget-shadow);
+			font-size: var(--font-size);
+			opacity: 1;
+			white-space: nowrap;
+		}
 
-	.bb-tooltip .header {
-		display: flex;
-		flex-direction: row;
-		justify-content: space-between;
-		gap: 1rem;
-	}
+		.bb-tooltip .header {
+			display: flex;
+			flex-direction: row;
+			justify-content: space-between;
+			gap: 1rem;
+		}
 
-	.bb-tooltip .header--title {
-		font-weight: 600;
-	}
+		.bb-tooltip .header--title {
+			font-weight: 600;
+		}
 
-	.bb-tooltip .header--description {
-		font-weight: normal;
-		font-style: italic;
-	}
+		.bb-tooltip .header--description {
+			font-weight: normal;
+			font-style: italic;
+		}
 
-	.bb-tooltip .changes {
-		margin: 0.5rem 0;
-	}
+		.bb-tooltip .changes {
+			margin: 0.5rem 0;
+		}
 
-	.bb-tooltip .refs {
-		display: flex;
-		font-size: 12px;
-		gap: 0.5rem;
-		flex-direction: row;
-		flex-wrap: wrap;
-		margin: 0.5rem 0;
-		max-width: fit-content;
-	}
-	.bb-tooltip .refs .branch {
-		border-radius: 3px;
-		padding: 0 4px;
-		background-color: var(--color-graph-minimap-tip-branchBackground);
-		border: 1px solid var(--color-graph-minimap-tip-branchBorder);
-		color: var(--color-graph-minimap-tip-branchForeground);
-	}
-	.bb-tooltip .refs .branch.current {
-		background-color: var(--color-graph-minimap-tip-headBackground);
-		border: 1px solid var(--color-graph-minimap-tip-headBorder);
-		color: var(--color-graph-minimap-tip-headForeground);
-	}
-	.bb-tooltip .refs .remote {
-		border-radius: 3px;
-		padding: 0 4px;
-		background-color: var(--color-graph-minimap-tip-remoteBackground);
-		border: 1px solid var(--color-graph-minimap-tip-remoteBorder);
-		color: var(--color-graph-minimap-tip-remoteForeground);
-	}
-	.bb-tooltip .refs .remote.current {
-		background-color: var(--color-graph-minimap-tip-upstreamBackground);
-		border: 1px solid var(--color-graph-minimap-tip-upstreamBorder);
-		color: var(--color-graph-minimap-tip-upstreamForeground);
-	}
-	.bb-tooltip .refs .stash {
-		border-radius: 3px;
-		padding: 0 4px;
-		background-color: var(--color-graph-minimap-tip-stashBackground);
-		border: 1px solid var(--color-graph-minimap-tip-stashBorder);
-		color: var(--color-graph-minimap-tip-stashForeground);
-	}
-	.bb-tooltip .refs .tag {
-		border-radius: 3px;
-		padding: 0 4px;
-		background-color: var(--color-graph-minimap-tip-tagBackground);
-		border: 1px solid var(--color-graph-minimap-tip-tagBorder);
-		color: var(--color-graph-minimap-tip-tagForeground);
-	}
-`;
+		.bb-tooltip .results {
+			display: flex;
+			font-size: 12px;
+			gap: 0.5rem;
+			flex-direction: row;
+			flex-wrap: wrap;
+			margin: 0.5rem 0;
+			max-width: fit-content;
+		}
 
-const markerZOrder = [
-	'marker-result',
-	'marker-head-arrow-left',
-	'marker-head-arrow-right',
-	'marker-head',
-	'marker-upstream',
-	'marker-branch',
-	'marker-stash',
-	'marker-remote',
-	'marker-tag',
-	'visible-area',
-];
+		.bb-tooltip .results .result {
+			border-radius: 3px;
+			padding: 0 4px;
+			background-color: var(--color-graph-minimap-tip-highlightBackground);
+			border: 1px solid var(--color-graph-minimap-tip-highlightBorder);
+			color: var(--color-graph-minimap-tip-highlightForeground);
+		}
 
-@customElement({ name: 'graph-minimap', template: template, styles: styles })
-export class GraphMinimap extends FASTElement {
-	chart!: HTMLDivElement;
+		.bb-tooltip .refs {
+			display: flex;
+			font-size: 12px;
+			gap: 0.5rem;
+			flex-direction: row;
+			flex-wrap: wrap;
+			margin: 0.5rem 0;
+			max-width: fit-content;
+		}
+		.bb-tooltip .refs:empty {
+			margin: 0;
+		}
 
+		.bb-tooltip .refs .branch {
+			border-radius: 3px;
+			padding: 0 4px;
+			background-color: var(--color-graph-minimap-tip-branchBackground);
+			border: 1px solid var(--color-graph-minimap-tip-branchBorder);
+			color: var(--color-graph-minimap-tip-branchForeground);
+		}
+		.bb-tooltip .refs .branch.current {
+			background-color: var(--color-graph-minimap-tip-headBackground);
+			border: 1px solid var(--color-graph-minimap-tip-headBorder);
+			color: var(--color-graph-minimap-tip-headForeground);
+		}
+		.bb-tooltip .refs .remote {
+			border-radius: 3px;
+			padding: 0 4px;
+			background-color: var(--color-graph-minimap-tip-remoteBackground);
+			border: 1px solid var(--color-graph-minimap-tip-remoteBorder);
+			color: var(--color-graph-minimap-tip-remoteForeground);
+		}
+		.bb-tooltip .refs .remote.current {
+			background-color: var(--color-graph-minimap-tip-upstreamBackground);
+			border: 1px solid var(--color-graph-minimap-tip-upstreamBorder);
+			color: var(--color-graph-minimap-tip-upstreamForeground);
+		}
+		.bb-tooltip .refs .stash {
+			border-radius: 3px;
+			padding: 0 4px;
+			background-color: var(--color-graph-minimap-tip-stashBackground);
+			border: 1px solid var(--color-graph-minimap-tip-stashBorder);
+			color: var(--color-graph-minimap-tip-stashForeground);
+		}
+		.bb-tooltip .refs .tag {
+			border-radius: 3px;
+			padding: 0 4px;
+			background-color: var(--color-graph-minimap-tip-tagBackground);
+			border: 1px solid var(--color-graph-minimap-tip-tagBorder);
+			color: var(--color-graph-minimap-tip-tagForeground);
+		}
+
+		.bb-event-rects {
+			cursor: pointer !important;
+		}
+	`;
+
+	@query('#chart')
+	chartContainer!: HTMLDivElement;
 	private _chart!: Chart;
+
+	@query('#spinner')
+	spinner!: HTMLDivElement;
+
 	private _loadTimer: ReturnType<typeof setTimeout> | undefined;
 
 	private _markerRegions: Iterable<RegionOptions> | undefined;
 	private _regions: RegionOptions[] | undefined;
 
-	@observable
+	@property({ type: Number })
 	activeDay: number | undefined;
-	@debug({ singleLine: true })
-	protected activeDayChanged() {
+
+	@observe('activeDay')
+	private onActiveDayChanged() {
 		this.select(this.activeDay);
 	}
 
-	@observable
+	@property({ type: Map })
 	data: Map<number, GraphMinimapStats | null> | undefined;
+
+	@property({ type: String })
+	dataType: 'commits' | 'lines' = 'commits';
+
+	@observe(['data', 'dataType'])
+	private onDataChanged() {
+		this.handleDataChanged(false);
+	}
+
+	@property({ type: Map })
+	markers: Map<number, GraphMinimapMarker[]> | undefined;
+
+	@observe('markers')
+	private onMarkersChanged() {
+		this.handleDataChanged(true);
+	}
+
+	@property({ type: Map })
+	searchResults: Map<number, GraphMinimapSearchResultMarker> | undefined;
+
+	@observe('searchResults')
+	private onSearchResultsChanged() {
+		this._chart?.regions.remove({ classes: ['marker-result'] });
+		if (this.searchResults == null) return;
+		this._chart?.regions.add([...this.getSearchResultsRegions(this.searchResults)]);
+	}
+
+	@property({ type: Object })
+	visibleDays: { top: number; bottom: number } | undefined;
+
+	@observe('visibleDays')
+	private onVisibleDaysChanged() {
+		this._chart?.regions.remove({ classes: ['visible-area'] });
+		if (this.visibleDays == null) return;
+
+		this._chart?.regions.add(this.getVisibleAreaRegion(this.visibleDays));
+	}
+
+	override connectedCallback(): void {
+		super.connectedCallback();
+
+		this.handleDataChanged(false);
+	}
+
+	override disconnectedCallback(): void {
+		super.disconnectedCallback();
+
+		this._chart?.destroy();
+		this._chart = undefined!;
+	}
+
 	@debug({ singleLine: true })
-	protected dataChanged(
-		_oldVal?: Map<number, GraphMinimapStats | null>,
-		_newVal?: Map<number, GraphMinimapStats | null>,
-		markerChanged?: boolean,
-	) {
+	private handleDataChanged(markerChanged: boolean) {
 		if (this._loadTimer) {
 			clearTimeout(this._loadTimer);
 			this._loadTimer = undefined;
@@ -424,49 +534,14 @@ export class GraphMinimap extends FASTElement {
 		this._loadTimer = setTimeout(() => this.loadChart(), 150);
 	}
 
-	@observable
-	markers: Map<number, GraphMinimapMarker[]> | undefined;
-	protected markersChanged() {
-		this.dataChanged(undefined, undefined, true);
-	}
-
-	@observable
-	searchResults: Map<number, GraphMinimapSearchResultMarker> | undefined;
-	protected searchResultsChanged() {
-		this._chart?.regions.remove({ classes: ['marker-result'] });
-		if (this.searchResults == null) return;
-
-		this._chart?.regions.add([...this.getSearchResultsRegions(this.searchResults)]);
-	}
-
-	@observable
-	visibleDays: { top: number; bottom: number } | undefined;
-	@debug({ singleLine: true })
-	protected visibleDaysChanged() {
-		this._chart?.regions.remove({ classes: ['visible-area'] });
-		if (this.visibleDays == null) return;
-
-		this._chart?.regions.add(this.getVisibleAreaRegion(this.visibleDays));
-	}
-
-	override connectedCallback(): void {
-		super.connectedCallback();
-
-		this.dataChanged(undefined, undefined, false);
-	}
-
-	override disconnectedCallback(): void {
-		super.disconnectedCallback();
-
-		this._chart?.destroy();
-		this._chart = undefined!;
-	}
-
 	private getInternalChart(): any {
-		return (this._chart as any).internal;
+		try {
+			return (this._chart as any)?.internal;
+		} catch {
+			return undefined;
+		}
 	}
 
-	@debug({ singleLine: true })
 	select(date: number | Date | undefined, trackOnly: boolean = false) {
 		if (date == null) {
 			this.unselect();
@@ -478,6 +553,8 @@ export class GraphMinimap extends FASTElement {
 		if (d == null) return;
 
 		const internal = this.getInternalChart();
+		if (internal == null) return;
+
 		internal.showGridFocus([d]);
 
 		if (!trackOnly) {
@@ -488,10 +565,9 @@ export class GraphMinimap extends FASTElement {
 		}
 	}
 
-	@debug({ singleLine: true })
 	unselect(date?: number | Date, focus: boolean = false) {
 		if (focus) {
-			this.getInternalChart().hideGridFocus();
+			this.getInternalChart()?.hideGridFocus();
 
 			return;
 		}
@@ -506,7 +582,7 @@ export class GraphMinimap extends FASTElement {
 		}
 	}
 
-	private getData(date: number | Date): DataItem<number> | undefined {
+	private getData(date: number | Date): DataItem | undefined {
 		date = new Date(date).setHours(0, 0, 0, 0);
 		return this._chart
 			?.data()[0]
@@ -590,15 +666,15 @@ export class GraphMinimap extends FASTElement {
 					start: day,
 					end: day,
 					class: 'marker-result',
-				} satisfies RegionOptions),
+				}) satisfies RegionOptions,
 		);
 	}
 
 	private getVisibleAreaRegion(visibleDays: NonNullable<typeof this.visibleDays>): RegionOptions {
 		return {
 			axis: 'x',
-			start: visibleDays.bottom,
-			end: visibleDays.top,
+			start: visibleDays.top,
+			end: visibleDays.bottom,
 			class: 'visible-area',
 		} satisfies RegionOptions;
 	}
@@ -613,13 +689,15 @@ export class GraphMinimap extends FASTElement {
 	@debug({ singleLine: true })
 	private async loadChartCore() {
 		if (!this.data?.size) {
+			this.spinner.setAttribute('aria-hidden', 'false');
+
 			this._chart?.destroy();
 			this._chart = undefined!;
 
 			return;
 		}
 
-		const hasActivity = some(this.data.values(), v => v?.activity != null);
+		const showLinesChanged = this.dataType === 'lines';
 
 		// Convert the map to an array dates and an array of stats
 		const dates = [];
@@ -650,7 +728,7 @@ export class GraphMinimap extends FASTElement {
 			stat = this.data.get(day);
 			dates.push(day);
 
-			if (hasActivity) {
+			if (showLinesChanged) {
 				adds = stat?.activity?.additions ?? 0;
 				deletes = stat?.activity?.deletions ?? 0;
 				changes = adds + deletes;
@@ -721,12 +799,13 @@ export class GraphMinimap extends FASTElement {
 		);
 
 		if (this._chart == null) {
-			const { bb, selection, spline, zoom } = await import(/* webpackChunkName: "billboard" */ 'billboard.js');
+			const { bb, selection, spline, zoom } = await import(
+				/* webpackChunkName: "lib-billboard" */ 'billboard.js'
+			);
 			this._chart = bb.generate({
-				bindto: this.chart,
+				bindto: this.chartContainer,
 				data: {
 					x: 'date',
-					xSort: false,
 					axes: {
 						activity: 'y',
 					},
@@ -745,10 +824,7 @@ export class GraphMinimap extends FASTElement {
 						const sha = this.searchResults?.get(day)?.sha ?? this.data?.get(day)?.sha;
 
 						queueMicrotask(() => {
-							this.$emit('selected', {
-								date: date,
-								sha: sha,
-							} satisfies GraphMinimapDaySelectedEventDetail);
+							this.emit('gl-graph-minimap-selected', { date: date, sha: sha });
 						});
 					},
 					selection: {
@@ -765,17 +841,13 @@ export class GraphMinimap extends FASTElement {
 				},
 				axis: {
 					x: {
-						show: false,
+						inverted: true,
 						localtime: true,
 						type: 'timeseries',
 					},
 					y: {
 						min: 0,
 						max: yMax,
-						show: true,
-						padding: {
-							bottom: 8,
-						},
 					},
 				},
 				clipPath: false,
@@ -791,6 +863,13 @@ export class GraphMinimap extends FASTElement {
 				line: {
 					point: true,
 					zerobased: true,
+				},
+				padding: {
+					mode: 'fit',
+					bottom: -8,
+					left: 0,
+					right: 0,
+					top: 0,
 				},
 				point: {
 					show: true,
@@ -819,8 +898,11 @@ export class GraphMinimap extends FASTElement {
 					contents: (data, _defaultTitleFormat, _defaultValueFormat, _color) => {
 						const date = new Date(data[0].x);
 
-						const stat = this.data?.get(getDay(date));
-						const markers = this.markers?.get(getDay(date));
+						const day = getDay(date);
+						const stat = this.data?.get(day);
+						const markers = this.markers?.get(day);
+						const results = this.searchResults?.get(day);
+
 						let groups;
 						if (markers?.length) {
 							groups = groupByMap(markers, m => m.type);
@@ -828,85 +910,85 @@ export class GraphMinimap extends FASTElement {
 
 						const stashesCount = groups?.get('stash')?.length ?? 0;
 
-						return /*html*/ `<div class="bb-tooltip">
-							<div class="header">
-								<span class="header--title">${formatDate(date, 'MMMM Do, YYYY')}</span>
-								<span class="header--description">(${capitalize(fromNow(date))})</span>
-							</div>
-							<div class="changes">
-								<span>${
-									(stat?.commits ?? 0) === 0
-										? 'No commits'
-										: `${pluralize('commit', stat?.commits ?? 0, {
-												format: c => formatNumeric(c),
-												zero: 'No',
-										  })}, ${pluralize('file', stat?.commits ?? 0, {
-												format: c => formatNumeric(c),
-												zero: 'No',
-										  })}${
-												hasActivity
-													? `, ${pluralize(
-															'line',
-															(stat?.activity?.additions ?? 0) +
-																(stat?.activity?.deletions ?? 0),
-															{
-																format: c => formatNumeric(c),
-																zero: 'No',
-															},
-													  )}`
-													: ''
-										  } changed`
-								}</span>
-							</div>
-							${
-								groups != null
-									? /*html*/ `
-							<div class="refs">
-								${
-									groups
-										?.get('branch')
-										?.sort((a, b) => (a.current ? -1 : 1) - (b.current ? -1 : 1))
-										.map(
-											m =>
-												/*html*/ `<span class="branch${m.current ? ' current' : ''}">${
-													m.name
-												}</span>`,
-										)
-										.join('') ?? ''
-								}
-								${
-									groups
-										?.get('remote')
-										?.sort((a, b) => (a.current ? -1 : 1) - (b.current ? -1 : 1))
-										?.map(
-											m =>
-												/*html*/ `<span class="remote${m.current ? ' current' : ''}">${
-													m.name
-												}</span>`,
-										)
-										.join('') ?? ''
-								}
-								${stashesCount ? /*html*/ `<span class="stash">${pluralize('stash', stashesCount, { plural: 'stashes' })}</span>` : ''}
-								${
-									groups
-										?.get('tag')
-										?.map(m => /*html*/ `<span class="tag">${m.name}</span>`)
-										.join('') ?? ''
-								}
-							</div>`
-									: ''
+						let commits;
+						let linesChanged;
+						let resultsCount;
+						if (stat?.commits) {
+							commits = pluralize('commit', stat.commits, { format: c => formatNumeric(c) });
+							if (results?.count) {
+								resultsCount = pluralize('matching commit', results.count);
 							}
-						</div>`;
+
+							if (this.dataType === 'lines') {
+								linesChanged = `${pluralize('file', stat?.files ?? 0, {
+									format: c => formatNumeric(c),
+									zero: 'No',
+								})}, ${pluralize(
+									'line',
+									(stat?.activity?.additions ?? 0) + (stat?.activity?.deletions ?? 0),
+									{
+										format: c => formatNumeric(c),
+										zero: 'No',
+									},
+								)} changed`;
+							}
+						} else {
+							commits = 'No commits';
+						}
+
+						return /*html*/ `<div class="bb-tooltip">
+						<div class="header">
+							<span class="header--title">${formatDate(date, 'MMMM Do, YYYY')}</span>
+							<span class="header--description">(${capitalize(fromNow(date))})</span>
+						</div>
+						<div class="changes">
+							<span>${commits}${linesChanged ? `, ${linesChanged}` : ''}</span>
+						</div>
+						${resultsCount ? /*html*/ `<div class="results"><span class="result">${resultsCount}</span></div>` : ''}
+						${
+							groups != null
+								? /*html*/ `
+						<div class="refs">${
+							stashesCount
+								? /*html*/ `<span class="stash">${pluralize('stash', stashesCount, {
+										plural: 'stashes',
+								  })}</span>`
+								: ''
+						}${
+							groups
+								?.get('branch')
+								?.sort((a, b) => (a.current ? -1 : 1) - (b.current ? -1 : 1))
+								.map(
+									m => /*html*/ `<span class="branch${m.current ? ' current' : ''}">${m.name}</span>`,
+								)
+								.join('') ?? ''
+						}</div>
+						<div class="refs">${
+							groups
+								?.get('remote')
+								?.sort((a, b) => (a.current ? -1 : 1) - (b.current ? -1 : 1))
+								?.map(
+									m => /*html*/ `<span class="remote${m.current ? ' current' : ''}">${m.name}</span>`,
+								)
+								.join('') ?? ''
+						}${
+							groups
+								?.get('tag')
+								?.map(m => /*html*/ `<span class="tag">${m.name}</span>`)
+								.join('') ?? ''
+						}</div>`
+								: ''
+						}
+					</div>`;
 					},
 					grouped: true,
 					position: (_data, width, _height, element, pos) => {
-						const { x } = pos;
+						let { x } = pos;
 						const rect = (element as HTMLElement).getBoundingClientRect();
-						let left = rect.right - x;
-						if (left + width > rect.right) {
-							left = rect.right - width;
+						if (x + width > rect.right) {
+							x = rect.right - width;
 						}
-						return { top: 0, left: left };
+						return { top: 0, left: x };
 					},
 				},
 				transition: {
@@ -917,7 +999,7 @@ export class GraphMinimap extends FASTElement {
 					rescale: false,
 					type: 'wheel',
 					// Reset the active day when zooming because it fails to update properly
-					onzoom: debounce(() => this.activeDayChanged(), 250),
+					onzoom: debounce(() => this.onActiveDayChanged(), 250),
 				},
 				onafterinit: function () {
 					const xAxis = this.$.main.selectAll<Element, any>('.bb-axis-x').node();
@@ -951,14 +1033,25 @@ export class GraphMinimap extends FASTElement {
 			this._chart.regions(regions);
 		}
 
-		this.activeDayChanged();
+		this.spinner.setAttribute('aria-hidden', 'true');
+
+		this.onActiveDayChanged();
+	}
+
+	override render() {
+		return html`
+			<div id="spinner"><code-icon icon="loading" modifier="spin"></code-icon></div>
+			<div id="chart"></div>
+			<div
+				class="legend"
+				title="${this.dataType === 'lines' ? 'Showing lines changed per day' : 'Showing commits per day'}"
+			>
+				<code-icon icon="${this.dataType === 'lines' ? 'request-changes' : 'git-commit'}"></code-icon>
+			</div>
+		`;
 	}
 }
 
 function getDay(date: number | Date): number {
 	return new Date(date).setHours(0, 0, 0, 0);
-}
-
-function capitalize(s: string): string {
-	return s.charAt(0).toUpperCase() + s.slice(1);
 }

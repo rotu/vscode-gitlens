@@ -1,71 +1,45 @@
-import type { ViewsLayout } from '../../commands/setViewsLayout';
-import type { RepositoriesVisibility } from '../../git/gitProviderService';
-import type { Subscription } from '../../subscription';
-import { IpcCommandType, IpcNotificationType } from '../protocol';
+import type { Subscription } from '../../plus/gk/account/subscription';
+import type { IpcScope, WebviewState } from '../protocol';
+import { IpcCommand, IpcNotification } from '../protocol';
 
-export const enum CompletedActions {
-	DismissedWelcome = 'dismissed:welcome',
-	OpenedSCM = 'opened:scm',
-}
+export const scope: IpcScope = 'home';
 
-export interface State {
-	extensionEnabled: boolean;
+export interface State extends WebviewState {
+	repositories: DidChangeRepositoriesParams;
 	webroot?: string;
+	promoStates: Record<string, boolean>;
 	subscription: Subscription;
-	completedActions: CompletedActions[];
-	completedSteps?: string[];
-	dismissedBanners?: string[];
-	dismissedSections?: string[];
-	plusEnabled: boolean;
-	visibility: RepositoriesVisibility;
-	avatar?: string;
-	layout: ViewsLayout;
-	pinStatus: boolean;
+	orgSettings: {
+		drafts: boolean;
+	};
+	walkthroughCollapsed: boolean;
 }
 
-export interface CompleteStepParams {
-	id: string;
-	completed: boolean;
-}
-export const CompleteStepCommandType = new IpcCommandType<CompleteStepParams>('home/step/complete');
+// COMMANDS
 
-export interface DismissSectionParams {
-	id: string;
+export interface CollapseSectionParams {
+	section: string;
+	collapsed: boolean;
 }
-export const DismissSectionCommandType = new IpcCommandType<DismissSectionParams>('home/section/dismiss');
+export const CollapseSectionCommand = new IpcCommand<CollapseSectionParams>(scope, 'section/collapse');
 
-export const DismissStatusCommandType = new IpcCommandType<undefined>('home/status/dismiss');
+// NOTIFICATIONS
 
-export interface DismissBannerParams {
-	id: string;
+export interface DidChangeRepositoriesParams {
+	count: number;
+	openCount: number;
+	hasUnsafe: boolean;
+	trusted: boolean;
 }
-export const DismissBannerCommandType = new IpcCommandType<DismissBannerParams>('home/banner/dismiss');
+export const DidChangeRepositories = new IpcNotification<DidChangeRepositoriesParams>(scope, 'repositories/didChange');
 
 export interface DidChangeSubscriptionParams {
+	promoStates: Record<string, boolean>;
 	subscription: Subscription;
-	completedActions: CompletedActions[];
-	avatar?: string;
-	pinStatus: boolean;
 }
-export const DidChangeSubscriptionNotificationType = new IpcNotificationType<DidChangeSubscriptionParams>(
-	'subscription/didChange',
-);
+export const DidChangeSubscription = new IpcNotification<DidChangeSubscriptionParams>(scope, 'subscription/didChange');
 
-export interface DidChangeExtensionEnabledParams {
-	extensionEnabled: boolean;
+export interface DidChangeOrgSettingsParams {
+	orgSettings: State['orgSettings'];
 }
-export const DidChangeExtensionEnabledType = new IpcNotificationType<DidChangeExtensionEnabledParams>(
-	'extensionEnabled/didChange',
-);
-
-export interface DidChangeConfigurationParams {
-	plusEnabled: boolean;
-}
-export const DidChangeConfigurationType = new IpcNotificationType<DidChangeConfigurationParams>(
-	'configuration/didChange',
-);
-
-export interface DidChangeLayoutParams {
-	layout: ViewsLayout;
-}
-export const DidChangeLayoutType = new IpcNotificationType<DidChangeLayoutParams>('layout/didChange');
+export const DidChangeOrgSettings = new IpcNotification<DidChangeOrgSettingsParams>(scope, 'org/settings/didChange');

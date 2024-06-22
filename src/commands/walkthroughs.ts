@@ -1,7 +1,8 @@
+import type { Source, Sources, WalkthroughSteps } from '../constants';
 import { Commands } from '../constants';
 import type { Container } from '../container';
 import { command } from '../system/command';
-import { openWalkthrough } from '../system/utils';
+import { openWalkthrough as openWalkthroughCore } from '../system/utils';
 import { Command } from './base';
 
 @command()
@@ -10,15 +11,15 @@ export class GetStartedCommand extends Command {
 		super(Commands.GetStarted);
 	}
 
-	execute(walkthroughId?: string) {
-		const extensionId = this.container.context.extension.id;
-		// If the walkthroughId param is the same as the extension id, then this was run from the extensions view gear menu
-		if (walkthroughId === extensionId) {
-			walkthroughId = undefined;
-		}
-
-		void openWalkthrough(extensionId, walkthroughId ?? 'gitlens.welcome');
+	execute(extensionIdOrsource?: Sources) {
+		// If the extensionIdOrsource is the same as the current extension, then it came from the extension content menu in the extension view, so don't pass the source
+		const source = extensionIdOrsource !== this.container.context.extension.id ? undefined : extensionIdOrsource;
+		openWalkthrough(this.container, source ? { source: source } : undefined);
 	}
+}
+
+export interface OpenWalkthroughCommandArgs extends Source {
+	step?: WalkthroughSteps | undefined;
 }
 
 @command()
@@ -27,8 +28,19 @@ export class OpenWalkthroughCommand extends Command {
 		super(Commands.OpenWalkthrough);
 	}
 
-	execute(walkthroughAndStep?: string) {
-		const [walkthroughId, stepId] = walkthroughAndStep?.split('|') ?? 'gitlens.welcome';
-		void openWalkthrough(this.container.context.extension.id, walkthroughId, stepId);
+	execute(args?: OpenWalkthroughCommandArgs) {
+		openWalkthrough(this.container, args);
 	}
+}
+
+function openWalkthrough(container: Container, args?: OpenWalkthroughCommandArgs) {
+	if (container.telemetry.enabled) {
+		container.telemetry.sendEvent(
+			'walkthrough',
+			{ step: args?.step },
+			args?.source ? { source: args.source, detail: args?.detail } : undefined,
+		);
+	}
+
+	void openWalkthroughCore(container.context.extension.id, 'welcome', args?.step, false);
 }

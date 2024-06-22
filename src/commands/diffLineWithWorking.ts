@@ -5,9 +5,10 @@ import type { Container } from '../container';
 import { GitUri } from '../git/gitUri';
 import type { GitCommit } from '../git/models/commit';
 import { uncommittedStaged } from '../git/models/constants';
-import { Logger } from '../logger';
 import { showFileNotUnderSourceControlWarningMessage, showGenericErrorMessage } from '../messages';
 import { command, executeCommand } from '../system/command';
+import { Logger } from '../system/logger';
+import type { CommandContext } from './base';
 import { ActiveEditorCommand, getCommandUri } from './base';
 import type { DiffWithCommandArgs } from './diffWith';
 
@@ -22,6 +23,14 @@ export interface DiffLineWithWorkingCommandArgs {
 export class DiffLineWithWorkingCommand extends ActiveEditorCommand {
 	constructor(private readonly container: Container) {
 		super(Commands.DiffLineWithWorking);
+	}
+
+	protected override preExecute(context: CommandContext, args?: DiffLineWithWorkingCommandArgs): Promise<any> {
+		if (context.type === 'editorLine') {
+			args = { ...args, line: context.line };
+		}
+
+		return this.execute(context.editor, context.uri, args);
 	}
 
 	async execute(editor?: TextEditor, uri?: Uri, args?: DiffLineWithWorkingCommandArgs): Promise<any> {

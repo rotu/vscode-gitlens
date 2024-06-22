@@ -1,9 +1,8 @@
-import { GitCommandSorting } from '../config';
-import { configuration } from '../configuration';
-import { ContextKeys } from '../constants';
+import type { RecentUsage } from '../constants';
 import type { Container } from '../container';
-import { getContext } from '../context';
-import type { RecentUsage } from '../storage';
+import { FocusCommand } from '../plus/focus/focus';
+import { configuration } from '../system/configuration';
+import { getContext } from '../system/context';
 import { BranchGitCommand } from './git/branch';
 import { CherryPickGitCommand } from './git/cherry-pick';
 import { CoAuthorsGitCommand } from './git/coauthors';
@@ -45,7 +44,8 @@ export function getSteps(
 	return command.executeSteps();
 }
 
-export class PickCommandStep implements QuickPickStep {
+export class PickCommandStep implements QuickPickStep<QuickCommand> {
+	readonly type = 'pick';
 	readonly buttons = [];
 	private readonly hiddenItems: QuickCommand[];
 	ignoreFocusOut = false;
@@ -54,12 +54,13 @@ export class PickCommandStep implements QuickPickStep {
 	readonly placeholder = 'Choose a git command';
 	readonly title = 'GitLens';
 
-	constructor(private readonly container: Container, args?: GitCommandsCommandArgs) {
-		const hasVirtualFolders = getContext<boolean>(ContextKeys.HasVirtualFolders, false);
+	constructor(
+		private readonly container: Container,
+		args?: GitCommandsCommandArgs,
+	) {
+		const hasVirtualFolders = getContext('gitlens:hasVirtualFolders', false);
 		const readonly =
-			hasVirtualFolders ||
-			getContext<boolean>(ContextKeys.Readonly, false) ||
-			getContext<boolean>(ContextKeys.Untrusted, false);
+			hasVirtualFolders || getContext('gitlens:readonly', false) || getContext('gitlens:untrusted', false);
 
 		this.items = [
 			readonly ? undefined : new BranchGitCommand(container, args?.command === 'branch' ? args : undefined),
@@ -99,7 +100,7 @@ export class PickCommandStep implements QuickPickStep {
 				: new WorktreeGitCommand(container, args?.command === 'worktree' ? args : undefined),
 		].filter(<T>(i: T | undefined): i is T => i != null);
 
-		if (configuration.get('gitCommands.sortBy') === GitCommandSorting.Usage) {
+		if (configuration.get('gitCommands.sortBy') === 'usage') {
 			const usage = this.container.storage.getWorkspace('gitComandPalette:usage');
 			if (usage != null) {
 				this.items.sort((a, b) => (usage[b.key] ?? 0) - (usage[a.key] ?? 0));
@@ -107,6 +108,9 @@ export class PickCommandStep implements QuickPickStep {
 		}
 
 		this.hiddenItems = [];
+		if (args?.command === 'focus') {
+			this.hiddenItems.push(new FocusCommand(container, args));
+		}
 	}
 
 	private _command: QuickCommand | undefined;

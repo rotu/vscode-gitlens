@@ -4,9 +4,9 @@ import type { Container } from '../container';
 import { GitUri } from '../git/gitUri';
 import type { GitCommit } from '../git/models/commit';
 import { deletedOrMissing } from '../git/models/constants';
-import { Logger } from '../logger';
 import { showCommitHasNoPreviousCommitWarningMessage, showGenericErrorMessage } from '../messages';
 import { command, executeCommand } from '../system/command';
+import { Logger } from '../system/logger';
 import { findOrOpenEditor } from '../system/utils';
 import type { CommandContext } from './base';
 import { ActiveEditorCommand, getCommandUri } from './base';
@@ -88,7 +88,7 @@ export class DiffWithPreviousCommand extends ActiveEditorCommand {
 				args.inDiffRightEditor ? 1 : 0,
 			);
 
-			if (diffUris == null || diffUris.previous == null) {
+			if (diffUris?.previous == null) {
 				if (diffUris == null) {
 					void showCommitHasNoPreviousCommitWarningMessage();
 

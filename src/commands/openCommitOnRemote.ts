@@ -3,11 +3,16 @@ import { Commands } from '../constants';
 import type { Container } from '../container';
 import { GitUri } from '../git/gitUri';
 import { deletedOrMissing } from '../git/models/constants';
+import { isUncommitted } from '../git/models/reference';
 import { RemoteResourceType } from '../git/models/remoteResource';
-import { Logger } from '../logger';
-import { showFileNotUnderSourceControlWarningMessage, showGenericErrorMessage } from '../messages';
+import {
+	showCommitNotFoundWarningMessage,
+	showFileNotUnderSourceControlWarningMessage,
+	showGenericErrorMessage,
+} from '../messages';
 import { getBestRepositoryOrShowPicker } from '../quickpicks/repositoryPicker';
 import { command, executeCommand } from '../system/command';
+import { Logger } from '../system/logger';
 import type { CommandContext } from './base';
 import {
 	ActiveEditorCommand,
@@ -19,6 +24,7 @@ import type { OpenOnRemoteCommandArgs } from './openOnRemote';
 
 export interface OpenCommitOnRemoteCommandArgs {
 	clipboard?: boolean;
+	line?: number;
 	sha?: string;
 }
 
@@ -37,6 +43,10 @@ export class OpenCommitOnRemoteCommand extends ActiveEditorCommand {
 
 	protected override preExecute(context: CommandContext, args?: OpenCommitOnRemoteCommandArgs) {
 		let uri = context.uri;
+
+		if (context.type === 'editorLine') {
+			args = { ...args, line: context.line };
+		}
 
 		if (isCommandContextViewNodeHasCommit(context)) {
 			if (context.node.commit.isUncommitted) return Promise.resolve(undefined);
@@ -79,12 +89,16 @@ export class OpenCommitOnRemoteCommand extends ActiveEditorCommand {
 
 		try {
 			if (args.sha == null) {
-				const blameline = editor == null ? 0 : editor.selection.active.line;
-				if (blameline < 0) return;
+				const blameLine = args.line ?? editor?.selection.active.line;
+				if (blameLine == null) return;
 
-				const blame = await this.container.git.getBlameForLine(gitUri, blameline, editor?.document);
+				const blame = await this.container.git.getBlameForLine(gitUri, blameLine, editor?.document);
 				if (blame == null) {
-					void showFileNotUnderSourceControlWarningMessage('Unable to open commit on remote provider');
+					void showFileNotUnderSourceControlWarningMessage(
+						args?.clipboard
+							? 'Unable to copy the commit SHA'
+							: 'Unable to open the commit on the remote provider',
+					);
 
 					return;
 				}
@@ -93,6 +107,16 @@ export class OpenCommitOnRemoteCommand extends ActiveEditorCommand {
 				args.sha = blame.commit.isUncommitted
 					? (await blame.commit.getPreviousSha()) ?? deletedOrMissing
 					: blame.commit.sha;
+			}
+
+			if (args.sha == null || args.sha === deletedOrMissing || isUncommitted(args.sha)) {
+				void showCommitNotFoundWarningMessage(
+					args?.clipboard
+						? 'Unable to copy the commit SHA'
+						: 'Unable to open the commit on the remote provider',
+				);
+
+				return;
 			}
 
 			void (await executeCommand<OpenOnRemoteCommandArgs>(Commands.OpenOnRemote, {

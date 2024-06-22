@@ -4,10 +4,10 @@ import { Commands } from '../constants';
 import type { Container } from '../container';
 import { copyMessageToClipboard } from '../git/actions/commit';
 import { GitUri } from '../git/gitUri';
-import { Logger } from '../logger';
 import { showGenericErrorMessage } from '../messages';
 import { command } from '../system/command';
 import { first } from '../system/iterable';
+import { Logger } from '../system/logger';
 import type { CommandContext } from './base';
 import {
 	ActiveEditorCommand,
@@ -83,6 +83,7 @@ export class CopyMessageToClipboardCommand extends ActiveEditorCommand {
 				} else if (args.message == null) {
 					const gitUri = await GitUri.fromUri(uri);
 					repoPath = gitUri.repoPath;
+					if (!repoPath) return;
 
 					if (args.sha == null) {
 						const blameline = editor?.selection.active.line ?? 0;
@@ -101,7 +102,7 @@ export class CopyMessageToClipboardCommand extends ActiveEditorCommand {
 							return;
 						}
 					} else {
-						await copyMessageToClipboard({ ref: args.sha, repoPath: repoPath! });
+						await copyMessageToClipboard({ ref: args.sha, repoPath: repoPath });
 						return;
 					}
 				}

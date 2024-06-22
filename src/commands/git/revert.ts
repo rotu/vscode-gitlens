@@ -16,15 +16,8 @@ import type {
 	StepSelection,
 	StepState,
 } from '../quickCommand';
-import {
-	appendReposToTitle,
-	canPickStepContinue,
-	endSteps,
-	pickCommitsStep,
-	pickRepositoryStep,
-	QuickCommand,
-	StepResultBreak,
-} from '../quickCommand';
+import { canPickStepContinue, endSteps, QuickCommand, StepResultBreak } from '../quickCommand';
+import { appendReposToTitle, pickCommitsStep, pickRepositoryStep } from '../quickCommand.steps';
 
 interface Context {
 	repos: Repository[];
@@ -79,7 +72,7 @@ export class RevertGitCommand extends QuickCommand<State> {
 	}
 
 	execute(state: RevertStepState<State<GitRevisionReference[]>>) {
-		return state.repo.revert(...state.flags, ...state.references.map(c => c.ref).reverse());
+		state.repo.revert(...state.flags, ...state.references.map(c => c.ref).reverse());
 	}
 
 	protected async *steps(state: PartialStepState<State>): StepGenerator {
@@ -134,7 +127,7 @@ export class RevertGitCommand extends QuickCommand<State> {
 
 				let log = context.cache.get(ref);
 				if (log == null) {
-					log = this.container.git.getLog(state.repo.path, { ref: ref, merges: false });
+					log = this.container.git.getLog(state.repo.path, { ref: ref, merges: 'first-parent' });
 					context.cache.set(ref, log);
 				}
 

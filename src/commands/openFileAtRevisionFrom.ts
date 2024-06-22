@@ -1,5 +1,5 @@
 import type { TextDocumentShowOptions, TextEditor, Uri } from 'vscode';
-import type { FileAnnotationType } from '../configuration';
+import type { FileAnnotationType } from '../config';
 import { Commands, GlyphChars, quickPickTitleMaxChars } from '../constants';
 import type { Container } from '../container';
 import { openFileAtRevision } from '../git/actions/commit';
@@ -64,21 +64,20 @@ export class OpenFileAtRevisionFromCommand extends ActiveEditorCommand {
 					`${title}${gitUri.getFormattedFileName({ truncateTo: quickPickTitleMaxChars - title.length })}`,
 					'Choose a branch or tag to open the file revision from',
 					{
-						allowEnteringRefs: true,
-						keys: ['right', 'alt+right', 'ctrl+right'],
-						onDidPressKey: async (key, quickpick) => {
-							const [item] = quickpick.activeItems;
-							if (item != null) {
+						allowRevisions: true,
+						keyboard: {
+							keys: ['right', 'alt+right', 'ctrl+right'],
+							onDidPressKey: async (key, item) => {
 								await openFileAtRevision(
 									this.container.git.getRevisionUri(item.ref, gitUri.fsPath, gitUri.repoPath!),
 									{
-										annotationType: args!.annotationType,
-										line: args!.line,
+										annotationType: args.annotationType,
+										line: args.line,
 										preserveFocus: true,
-										preview: false,
+										preview: true,
 									},
 								);
-							}
+							},
 						},
 					},
 				);

@@ -2,25 +2,28 @@ import type { Uri } from 'vscode';
 import { window } from 'vscode';
 import { Commands } from '../../constants';
 import type { Container } from '../../container';
-import { add as addRemote } from '../../git/actions/remote';
 import { create as createWorktree, open as openWorktree } from '../../git/actions/worktree';
-import { createReference } from '../../git/models/reference';
+import { getLocalBranchByUpstream } from '../../git/models/branch';
+import type { GitBranchReference } from '../../git/models/reference';
+import { createReference, getReferenceFromBranch } from '../../git/models/reference';
 import type { GitRemote } from '../../git/models/remote';
+import { getWorktreeForBranch } from '../../git/models/worktree';
 import { parseGitRemoteUrl } from '../../git/parsers/remoteParser';
-import { Logger } from '../../logger';
 import { command } from '../../system/command';
+import { Logger } from '../../system/logger';
 import { waitUntilNextTick } from '../../system/promise';
 import { Command } from '../base';
 
-interface PullRequestNode {
-	readonly pullRequestModel: PullRequest;
+interface GHPRPullRequestNode {
+	readonly pullRequestModel: GHPRPullRequest;
 }
 
-interface PullRequest {
+export interface GHPRPullRequest {
 	readonly base: {
 		readonly repositoryCloneUrl: {
-			readonly owner: string;
 			readonly repositoryName: string;
+			readonly owner: string;
+			readonly url: Uri;
 		};
 	};
 	readonly githubRepository: {
@@ -30,6 +33,7 @@ interface PullRequest {
 		readonly ref: string;
 		readonly sha: string;
 		readonly repositoryCloneUrl: {
+			readonly repositoryName: string;
 			readonly owner: string;
 			readonly url: Uri;
 		};
@@ -46,7 +50,7 @@ export class OpenOrCreateWorktreeCommand extends Command {
 		super(Commands.OpenOrCreateWorktreeForGHPR);
 	}
 
-	async execute(...args: [PullRequestNode | PullRequest, ...unknown[]]) {
+	async execute(...args: [GHPRPullRequestNode | GHPRPullRequest, ...unknown[]]) {
 		const [arg] = args;
 		let pr;
 		if ('pullRequestModel' in arg) {
@@ -57,9 +61,9 @@ export class OpenOrCreateWorktreeCommand extends Command {
 
 		const {
 			base: {
-				repositoryCloneUrl: { owner: rootOwner, repositoryName: rootRepository },
+				repositoryCloneUrl: { url: rootUri, owner: rootOwner, repositoryName: rootRepository },
 			},
-			githubRepository: { rootUri },
+			githubRepository: { rootUri: localUri },
 			head: {
 				repositoryCloneUrl: { url: remoteUri, owner: remoteOwner },
 				ref,
@@ -67,78 +71,80 @@ export class OpenOrCreateWorktreeCommand extends Command {
 			item: { number },
 		} = pr;
 
-		let repo = this.container.git.getRepository(rootUri);
+		let repo = this.container.git.getRepository(localUri);
 		if (repo == null) {
-			void window.showWarningMessage(`Unable to find repository(${rootUri.toString()}) for PR #${number}`);
+			void window.showWarningMessage(`Unable to find repository(${localUri.toString()}) for PR #${number}`);
 			return;
 		}
 
-		repo = await repo.getMainRepository();
+		repo = await repo.getCommonRepository();
 		if (repo == null) {
-			void window.showWarningMessage(`Unable to find main repository(${rootUri.toString()}) for PR #${number}`);
-			return;
-		}
-
-		const worktrees = await repo.getWorktrees();
-		const worktree = worktrees.find(w => w.branch === ref);
-		if (worktree != null) {
-			void openWorktree(worktree);
-
+			void window.showWarningMessage(`Unable to find main repository(${localUri.toString()}) for PR #${number}`);
 			return;
 		}
 
 		const remoteUrl = remoteUri.toString();
 		const [, remoteDomain, remotePath] = parseGitRemoteUrl(remoteUrl);
 
-		let remote: GitRemote | undefined;
-		[remote] = await repo.getRemotes({ filter: r => r.matches(remoteDomain, remotePath) });
-		if (remote == null) {
-			const result = await window.showInformationMessage(
-				`Unable to find a remote for '${remoteUrl}'. Would you like to add a new remote?`,
-				{ modal: true },
-				{ title: 'Yes' },
-				{ title: 'No', isCloseAffordance: true },
-			);
-			if (result?.title !== 'Yes') return;
+		const remotes = await repo.getRemotes({ filter: r => r.matches(remoteDomain, remotePath) });
+		const remote = remotes[0] as GitRemote | undefined;
 
-			await addRemote(repo, remoteOwner, remoteUrl, {
-				confirm: false,
-				fetch: true,
-				reveal: false,
-			});
-			[remote] = await repo.getRemotes({ filter: r => r.url === remoteUrl });
-			if (remote == null) return;
-		} else {
+		let addRemote: { name: string; url: string } | undefined;
+		let remoteName;
+		if (remote != null) {
+			remoteName = remote.name;
+			// Ensure we have the latest from the remote
 			await this.container.git.fetch(repo.path, { remote: remote.name });
+		} else {
+			remoteName = remoteOwner;
+			addRemote = { name: remoteOwner, url: remoteUrl };
+		}
+
+		const remoteBranchName = `${remoteName}/${ref}`;
+		const localBranchName = `pr/${rootUri.toString() === remoteUri.toString() ? ref : remoteBranchName}`;
+		const qualifiedRemoteBranchName = `remotes/${remoteBranchName}`;
+
+		const worktree = await getWorktreeForBranch(repo, localBranchName, remoteBranchName);
+		if (worktree != null) {
+			void openWorktree(worktree, { openOnly: true });
+			return;
+		}
+
+		let branchRef: GitBranchReference;
+		let createBranch: string | undefined;
+
+		const localBranch = await getLocalBranchByUpstream(repo, remoteBranchName);
+		if (localBranch != null) {
+			branchRef = getReferenceFromBranch(localBranch);
+			// TODO@eamodio check if we are behind and if so ask the user to fast-forward
+		} else {
+			branchRef = createReference(qualifiedRemoteBranchName, repo.path, {
+				refType: 'branch',
+				name: qualifiedRemoteBranchName,
+				remote: true,
+			});
+			createBranch = localBranchName;
 		}
 
 		await waitUntilNextTick();
 
 		try {
-			await createWorktree(
-				repo,
-				undefined,
-				createReference(`${remote.name}/${ref}`, repo.path, {
-					refType: 'branch',
-					name: `${remote.name}/${ref}`,
-					remote: true,
-				}),
-			);
-
-			// Ensure that the worktree was created
-			const worktree = await this.container.git.getWorktree(repo.path, w => w.branch === ref);
+			const worktree = await createWorktree(repo, undefined, branchRef, {
+				addRemote: addRemote,
+				createBranch: createBranch,
+			});
 			if (worktree == null) return;
 
 			// Save the PR number in the branch config
 			// https://github.com/Microsoft/vscode-pull-request-github/blob/0c556c48c69a3df2f9cf9a45ed2c40909791b8ab/src/github/pullRequestGitHelper.ts#L18
 			void this.container.git.setConfig(
 				repo.path,
-				`branch.${ref}.github-pr-owner-number`,
+				`branch.${localBranchName}.github-pr-owner-number`,
 				`${rootOwner}#${rootRepository}#${number}`,
 			);
 		} catch (ex) {
 			Logger.error(ex, 'CreateWorktreeCommand', 'Unable to create worktree');
-			void window.showErrorMessage(`Unable to create worktree for ${ref}`);
+			void window.showErrorMessage(`Unable to create worktree for ${remoteOwner}:${ref}`);
 		}
 	}
 }

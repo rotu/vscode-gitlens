@@ -1,11 +1,11 @@
-<section id="commit-graph" class="section--settings section--collapsible">
+<section id="commit-graph" class="section--settings section--collapsible" tabindex="-1">
 	<div class="section__header">
 		<h2>
-			<span title="GitLens+ feature">✨</span> Commit Graph
+			Commit Graph&nbsp;<gl-feature-badge></gl-feature-badge>
 			<a
 				class="link__learn-more"
 				title="Learn more"
-				href="https://github.com/gitkraken/vscode-gitlens/#commit-graph-"
+				href="https://help.gitkraken.com/gitlens/gitlens-plus/#commit-graph"
 			>
 				<i class="icon icon__info"></i>
 			</a>
@@ -13,7 +13,7 @@
 
 		<p class="section__header-hint">
 			Adds a
-			<a class="command command--show-view" title="Show Commit Graph" href="command:gitlens.showGraphPage"
+			<a class="command command--show-view" title="Show Commit Graph" href="command:gitlens.showGraph"
 				>Commit Graph</a
 			>
 			to visualize, explore, and manage a Git repository
@@ -24,6 +24,18 @@
 		<div class="section__group">
 			<div class="section__content">
 				<div class="settings settings--fixed ml-1">
+					<div class="setting">
+						<div class="setting__input">
+							<label for="graph.layout">Prefer showing the Commit Graph in the </label>
+							<div class="select-container">
+								<select id="graph.layout" name="graph.layout" data-setting>
+									<option value="editor">editor area</option>
+									<option value="panel">bottom panel</option>
+								</select>
+							</div>
+						</div>
+					</div>
+
 					<div class="setting">
 						<div class="setting__input">
 							<label for="graph.defaultItemLimit">Show </label>
@@ -100,7 +112,7 @@
 								value="selection"
 								data-setting
 							/>
-							<label for="graph.showDetailsView">Show Commit Details view</label>
+							<label for="graph.showDetailsView">Show Inspect view</label>
 							<div class="select-container">
 								<select
 									id="graph.showDetailsView"
@@ -222,11 +234,28 @@
 						<span class="setting__hint hidden" data-visibility="graph.dateStyle =relative"
 							>Shows some dates relatively, e.g. 1 day ago</span
 						>
+						<span
+							class="setting__hint hidden"
+							data-visibility="graph.dateStyle =null &amp; defaultDateStyle =relative"
+							>Shows some dates relatively, e.g. 1 day ago</span
+						>
 						<span class="setting__hint hidden" data-visibility="graph.dateStyle =absolute"
 							>Shows dates absolutely, e.g.
 							<span
 								data-setting-preview="graph.dateFormat"
 								data-setting-preview-type="date"
+								data-setting-preview-default="MMMM Do, YYYY h:mma"
+								data-setting-preview-default-lookup="defaultDateFormat"
+							></span>
+						</span>
+						<span
+							class="setting__hint hidden"
+							data-visibility="graph.dateStyle =null &amp; defaultDateStyle =absolute"
+							>Shows dates absolutely, e.g.
+							<span
+								data-setting-preview="graph.dateFormat"
+								data-setting-preview-type="date"
+								data-setting-preview-default="MMMM Do, YYYY h:mma"
 								data-setting-preview-default-lookup="defaultDateFormat"
 							></span>
 						</span>
@@ -256,6 +285,7 @@
 							<span
 								data-setting-preview="graph.dateFormat"
 								data-setting-preview-type="date"
+								data-setting-preview-default="MMMM Do, YYYY h:mma"
 								data-setting-preview-default-lookup="defaultDateFormat"
 							></span>
 						</span>
@@ -272,6 +302,19 @@
 					height="450"
 				/>
 			</div>
+		</div>
+
+		<div class="section__group">
+			<p class="section__hint">
+				<i class="icon icon__info"></i> For more options, open the
+				<a
+					class="secondary"
+					title="Open Settings UI"
+					href="command:workbench.action.openSettings?%22gitlens.graph%22"
+					>Settings UI</a
+				>
+				and search for <b><i>gitlens.graph</i></b>
+			</p>
 		</div>
 	</div>
 </section>

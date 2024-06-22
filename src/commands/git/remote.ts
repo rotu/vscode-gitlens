@@ -1,14 +1,13 @@
-import type { QuickPickItem } from 'vscode';
 import { QuickInputButtons } from 'vscode';
 import type { Container } from '../../container';
 import { reveal } from '../../git/actions/remote';
 import type { GitRemote } from '../../git/models/remote';
 import { Repository } from '../../git/models/repository';
-import { Logger } from '../../logger';
 import { showGenericErrorMessage } from '../../messages';
 import type { QuickPickItemOfT } from '../../quickpicks/items/common';
 import type { FlagsQuickPickItem } from '../../quickpicks/items/flags';
 import { createFlagsQuickPickItem } from '../../quickpicks/items/flags';
+import { Logger } from '../../system/logger';
 import type { ViewsWithRepositoryFolders } from '../../views/viewBase';
 import type {
 	AsyncStepResultGenerator,
@@ -20,18 +19,20 @@ import type {
 	StepState,
 } from '../quickCommand';
 import {
-	appendReposToTitle,
 	canPickStepContinue,
 	createConfirmStep,
 	createPickStep,
 	endSteps,
+	QuickCommand,
+	StepResultBreak,
+} from '../quickCommand';
+import {
+	appendReposToTitle,
 	inputRemoteNameStep,
 	inputRemoteUrlStep,
 	pickRemoteStep,
 	pickRepositoryStep,
-	QuickCommand,
-	StepResultBreak,
-} from '../quickCommand';
+} from '../quickCommand.steps';
 
 interface Context {
 	repos: Repository[];
@@ -209,7 +210,9 @@ export class RemoteGitCommand extends QuickCommand<State> {
 				skippedStepTwo = false;
 				if (context.repos.length === 1) {
 					skippedStepTwo = true;
-					state.counter++;
+					if (state.repo == null) {
+						state.counter++;
+					}
 
 					state.repo = context.repos[0];
 				} else {
@@ -333,7 +336,7 @@ export class RemoteGitCommand extends QuickCommand<State> {
 		}
 	}
 
-	private *addCommandConfirmStep(state: AddStepState<AddState>, context: Context): StepResultGenerator<AddFlags[]> {
+	private *addCommandConfirmStep(state: AddStepState, context: Context): StepResultGenerator<AddFlags[]> {
 		const step: QuickPickStep<FlagsQuickPickItem<AddFlags>> = createConfirmStep(
 			appendReposToTitle(`Confirm ${context.title}`, state, context),
 			[
@@ -367,8 +370,6 @@ export class RemoteGitCommand extends QuickCommand<State> {
 			}
 
 			if (state.counter < 3 || state.remote == null) {
-				context.title = getTitle('Remotes', state.subcommand);
-
 				const result = yield* pickRemoteStep(state, context, {
 					picked: state.remote?.name,
 					placeholder: 'Choose remote to remove',
@@ -397,7 +398,7 @@ export class RemoteGitCommand extends QuickCommand<State> {
 		state: RemoveStepState<ExcludeSome<RemoveState, 'remote', string>>,
 		context: Context,
 	): StepResultGenerator<void> {
-		const step: QuickPickStep<QuickPickItem> = createConfirmStep(
+		const step: QuickPickStep = createConfirmStep(
 			appendReposToTitle(`Confirm ${context.title}`, state, context),
 			[
 				{
@@ -448,7 +449,7 @@ export class RemoteGitCommand extends QuickCommand<State> {
 		state: PruneStepState<ExcludeSome<PruneState, 'remote', string>>,
 		context: Context,
 	): StepResultGenerator<void> {
-		const step: QuickPickStep<QuickPickItem> = createConfirmStep(
+		const step: QuickPickStep = createConfirmStep(
 			appendReposToTitle(`Confirm ${context.title}`, state, context),
 			[
 				{

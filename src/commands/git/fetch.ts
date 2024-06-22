@@ -17,15 +17,8 @@ import type {
 	StepSelection,
 	StepState,
 } from '../quickCommand';
-import {
-	appendReposToTitle,
-	canPickStepContinue,
-	createConfirmStep,
-	endSteps,
-	pickRepositoriesStep,
-	QuickCommand,
-	StepResultBreak,
-} from '../quickCommand';
+import { canPickStepContinue, createConfirmStep, endSteps, QuickCommand, StepResultBreak } from '../quickCommand';
+import { appendReposToTitle, pickRepositoriesStep } from '../quickCommand.steps';
 
 interface Context {
 	repos: Repository[];
@@ -100,7 +93,9 @@ export class FetchGitCommand extends QuickCommand<State> {
 				skippedStepOne = false;
 				if (context.repos.length === 1) {
 					skippedStepOne = true;
-					state.counter++;
+					if (state.repos == null) {
+						state.counter++;
+					}
 
 					state.repos = [context.repos[0]];
 				} else {
@@ -160,9 +155,7 @@ export class FetchGitCommand extends QuickCommand<State> {
 			);
 		} else {
 			const reposToFetch =
-				state.repos.length === 1
-					? `$(repo) ${state.repos[0].formattedName}`
-					: `${state.repos.length} repositories`;
+				state.repos.length === 1 ? `$(repo) ${state.repos[0].formattedName}` : `${state.repos.length} repos`;
 
 			step = createConfirmStep(
 				appendReposToTitle(`Confirm ${this.title}`, state, context, lastFetchedOn),

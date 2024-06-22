@@ -5,7 +5,7 @@ import { render, unmountComponentAtNode } from 'react-dom';
 import type { GitGraphRowType } from '../../../../git/models/graph';
 import type { SearchQuery } from '../../../../git/search';
 import type {
-	DismissBannerParams,
+	DidSearchParams,
 	GraphAvatars,
 	GraphColumnsConfig,
 	GraphExcludedRef,
@@ -18,41 +18,43 @@ import type {
 	UpdateStateCallback,
 } from '../../../../plus/webviews/graph/protocol';
 import {
-	ChooseRepositoryCommandType,
-	DidChangeAvatarsNotificationType,
-	DidChangeColumnsNotificationType,
-	DidChangeGraphConfigurationNotificationType,
-	DidChangeNotificationType,
-	DidChangeRefsMetadataNotificationType,
-	DidChangeRefsVisibilityNotificationType,
-	DidChangeRowsNotificationType,
-	DidChangeSelectionNotificationType,
-	DidChangeSubscriptionNotificationType,
-	DidChangeWindowFocusNotificationType,
-	DidChangeWorkingTreeNotificationType,
-	DidEnsureRowNotificationType,
-	DidFetchNotificationType,
-	DidSearchNotificationType,
-	DimMergeCommitsCommandType,
-	DismissBannerCommandType,
+	ChooseRepositoryCommand,
+	DidChangeAvatarsNotification,
+	DidChangeColumnsNotification,
+	DidChangeGraphConfigurationNotification,
+	DidChangeNotification,
+	DidChangeRefsMetadataNotification,
+	DidChangeRefsVisibilityNotification,
+	DidChangeRowsNotification,
+	DidChangeRowsStatsNotification,
+	DidChangeScrollMarkersNotification,
+	DidChangeSelectionNotification,
+	DidChangeSubscriptionNotification,
+	DidChangeWorkingTreeNotification,
+	DidFetchNotification,
+	DidSearchNotification,
 	DoubleClickedCommandType,
-	EnsureRowCommandType,
-	GetMissingAvatarsCommandType,
-	GetMissingRefsMetadataCommandType,
-	GetMoreRowsCommandType,
-	SearchCommandType,
-	SearchOpenInViewCommandType,
-	UpdateColumnsCommandType,
-	UpdateExcludeTypeCommandType,
-	UpdateGraphConfigurationCommandType,
-	UpdateIncludeOnlyRefsCommandType,
-	UpdateRefsVisibilityCommandType,
-	UpdateSelectionCommandType,
+	EnsureRowRequest,
+	GetMissingAvatarsCommand,
+	GetMissingRefsMetadataCommand,
+	GetMoreRowsCommand,
+	GetRowHoverRequest,
+	OpenPullRequestDetailsCommand,
+	SearchOpenInViewCommand,
+	SearchRequest,
+	UpdateColumnsCommand,
+	UpdateExcludeTypeCommand,
+	UpdateGraphConfigurationCommand,
+	UpdateIncludeOnlyRefsCommand,
+	UpdateRefsVisibilityCommand,
+	UpdateSelectionCommand,
 } from '../../../../plus/webviews/graph/protocol';
-import { Color, darken, lighten, mix, opacity } from '../../../../system/color';
+import { Color, getCssVariable, mix, opacity } from '../../../../system/color';
+import { debug } from '../../../../system/decorators/log';
 import { debounce } from '../../../../system/function';
-import type { IpcMessage, IpcNotificationType } from '../../../protocol';
-import { onIpc } from '../../../protocol';
+import { getLogScope, setLogScopeExit } from '../../../../system/logger.scope';
+import type { IpcMessage, IpcNotification } from '../../../protocol';
+import { DidChangeHostWindowFocusNotification } from '../../../protocol';
 import { App } from '../../shared/appBase';
 import type { ThemeChangeEvent } from '../../shared/theme';
 import { GraphWrapper } from './GraphWrapper';
@@ -72,7 +74,7 @@ const graphLaneThemeColors = new Map([
 ]);
 
 export class GraphApp extends App<State> {
-	private callback?: UpdateStateCallback;
+	private updateStateCallback?: UpdateStateCallback;
 
 	constructor() {
 		super('GraphApp');
@@ -92,21 +94,22 @@ export class GraphApp extends App<State> {
 				<GraphWrapper
 					nonce={this.state.nonce}
 					state={this.state}
-					subscriber={(callback: UpdateStateCallback) => this.registerEvents(callback)}
+					subscriber={(updateState: UpdateStateCallback) => this.registerUpdateStateCallback(updateState)}
 					onColumnsChange={debounce<GraphApp['onColumnsChanged']>(
 						settings => this.onColumnsChanged(settings),
 						250,
 					)}
-					onDimMergeCommits={dim => this.onDimMergeCommits(dim)}
 					onRefsVisibilityChange={(refs: GraphExcludedRef[], visible: boolean) =>
 						this.onRefsVisibilityChanged(refs, visible)
 					}
 					onChooseRepository={debounce<GraphApp['onChooseRepository']>(() => this.onChooseRepository(), 250)}
 					onDoubleClickRef={(ref, metadata) => this.onDoubleClickRef(ref, metadata)}
 					onDoubleClickRow={(row, preserveFocus) => this.onDoubleClickRow(row, preserveFocus)}
+					onHoverRowPromise={(row: GraphRow) => this.onHoverRowPromise(row)}
 					onMissingAvatars={(...params) => this.onGetMissingAvatars(...params)}
 					onMissingRefsMetadata={(...params) => this.onGetMissingRefsMetadata(...params)}
 					onMoreRows={(...params) => this.onGetMoreRows(...params)}
+					onOpenPullRequest={(...params) => this.onOpenPullRequest(...params)}
 					onSearch={debounce<GraphApp['onSearch']>((search, options) => this.onSearch(search, options), 250)}
 					onSearchPromise={(...params) => this.onSearchPromise(...params)}
 					onSearchOpenInView={(...params) => this.onSearchOpenInView(...params)}
@@ -114,7 +117,6 @@ export class GraphApp extends App<State> {
 						rows => this.onSelectionChanged(rows),
 						250,
 					)}
-					onDismissBanner={key => this.onDismissBanner(key)}
 					onEnsureRowPromise={this.onEnsureRowPromise.bind(this)}
 					onExcludeType={this.onExcludeType.bind(this)}
 					onIncludeOnlyRef={this.onIncludeOnlyRef.bind(this)}
@@ -139,219 +141,171 @@ export class GraphApp extends App<State> {
 	// 	}
 	// }
 
-	protected override onMessageReceived(e: MessageEvent) {
-		const msg = e.data as IpcMessage;
-		this.log(`onMessageReceived(${msg.id}): name=${msg.method}`);
+	protected override onMessageReceived(msg: IpcMessage) {
+		const scope = getLogScope();
 
-		switch (msg.method) {
-			case DidChangeNotificationType.method:
-				onIpc(DidChangeNotificationType, msg, (params, type) => {
-					this.setState({ ...this.state, ...params.state }, type);
-				});
+		switch (true) {
+			case DidChangeNotification.is(msg):
+				this.setState({ ...this.state, ...msg.params.state }, DidChangeNotification);
 				break;
 
-			case DidFetchNotificationType.method:
-				onIpc(DidFetchNotificationType, msg, (params, type) => {
-					this.state.lastFetched = params.lastFetched;
-					this.setState(this.state, type);
-				});
+			case DidFetchNotification.is(msg):
+				this.state.lastFetched = msg.params.lastFetched;
+				this.setState(this.state, DidFetchNotification);
 				break;
 
-			case DidChangeAvatarsNotificationType.method:
-				onIpc(DidChangeAvatarsNotificationType, msg, (params, type) => {
-					this.state.avatars = params.avatars;
-					this.setState(this.state, type);
-				});
+			case DidChangeAvatarsNotification.is(msg):
+				this.state.avatars = msg.params.avatars;
+				this.setState(this.state, DidChangeAvatarsNotification);
 				break;
 
-			case DidChangeWindowFocusNotificationType.method:
-				onIpc(DidChangeWindowFocusNotificationType, msg, (params, type) => {
-					this.state.windowFocused = params.focused;
-					this.setState(this.state, type);
-				});
+			case DidChangeHostWindowFocusNotification.is(msg):
+				this.state.windowFocused = msg.params.focused;
+				this.setState(this.state, DidChangeHostWindowFocusNotification);
 				break;
 
-			case DidChangeColumnsNotificationType.method:
-				onIpc(DidChangeColumnsNotificationType, msg, (params, type) => {
-					this.state.columns = params.columns;
-					if (params.context != null) {
-						if (this.state.context == null) {
-							this.state.context = { header: params.context };
-						} else {
-							this.state.context.header = params.context;
-						}
-					} else if (this.state.context?.header != null) {
-						this.state.context.header = undefined;
-					}
-
-					this.setState(this.state, type);
-				});
+			case DidChangeColumnsNotification.is(msg):
+				this.state.columns = msg.params.columns;
+				this.state.context = {
+					...this.state.context,
+					header: msg.params.context,
+					settings: msg.params.settingsContext,
+				};
+				this.setState(this.state, DidChangeColumnsNotification);
 				break;
 
-			case DidChangeRefsVisibilityNotificationType.method:
-				onIpc(DidChangeRefsVisibilityNotificationType, msg, (params, type) => {
-					this.state.excludeRefs = params.excludeRefs;
-					this.state.excludeTypes = params.excludeTypes;
-					this.state.includeOnlyRefs = params.includeOnlyRefs;
-					this.setState(this.state, type);
-				});
+			case DidChangeRefsVisibilityNotification.is(msg):
+				this.state.excludeRefs = msg.params.excludeRefs;
+				this.state.excludeTypes = msg.params.excludeTypes;
+				this.state.includeOnlyRefs = msg.params.includeOnlyRefs;
+				this.setState(this.state, DidChangeRefsVisibilityNotification);
 				break;
 
-			case DidChangeRefsMetadataNotificationType.method:
-				onIpc(DidChangeRefsMetadataNotificationType, msg, (params, type) => {
-					this.state.refsMetadata = params.metadata;
-					this.setState(this.state, type);
-				});
+			case DidChangeRefsMetadataNotification.is(msg):
+				this.state.refsMetadata = msg.params.metadata;
+				this.setState(this.state, DidChangeRefsMetadataNotification);
 				break;
 
-			case DidChangeRowsNotificationType.method:
-				onIpc(DidChangeRowsNotificationType, msg, (params, type) => {
-					let rows;
-					if (params.rows.length && params.paging?.startingCursor != null && this.state.rows != null) {
-						const previousRows = this.state.rows;
-						const lastId = previousRows[previousRows.length - 1]?.sha;
+			case DidChangeRowsNotification.is(msg): {
+				let rows;
+				if (msg.params.rows.length && msg.params.paging?.startingCursor != null && this.state.rows != null) {
+					const previousRows = this.state.rows;
+					const lastId = previousRows[previousRows.length - 1]?.sha;
 
-						let previousRowsLength = previousRows.length;
-						const newRowsLength = params.rows.length;
+					let previousRowsLength = previousRows.length;
+					const newRowsLength = msg.params.rows.length;
 
-						this.log(
-							`onMessageReceived(${msg.id}:${msg.method}): paging in ${newRowsLength} rows into existing ${previousRowsLength} rows at ${params.paging.startingCursor} (last existing row: ${lastId})`,
-						);
+					this.log(
+						scope,
+						`paging in ${newRowsLength} rows into existing ${previousRowsLength} rows at ${msg.params.paging.startingCursor} (last existing row: ${lastId})`,
+					);
 
-						rows = [];
-						// Preallocate the array to avoid reallocations
-						rows.length = previousRowsLength + newRowsLength;
+					rows = [];
+					// Preallocate the array to avoid reallocations
+					rows.length = previousRowsLength + newRowsLength;
 
-						if (params.paging.startingCursor !== lastId) {
-							this.log(
-								`onMessageReceived(${msg.id}:${msg.method}): searching for ${params.paging.startingCursor} in existing rows`,
-							);
+					if (msg.params.paging.startingCursor !== lastId) {
+						this.log(scope, `searching for ${msg.params.paging.startingCursor} in existing rows`);
 
-							let i = 0;
-							let row;
-							for (row of previousRows) {
-								rows[i++] = row;
-								if (row.sha === params.paging.startingCursor) {
-									this.log(
-										`onMessageReceived(${msg.id}:${msg.method}): found ${params.paging.startingCursor} in existing rows`,
-									);
+						let i = 0;
+						let row;
+						for (row of previousRows) {
+							rows[i++] = row;
+							if (row.sha === msg.params.paging.startingCursor) {
+								this.log(scope, `found ${msg.params.paging.startingCursor} in existing rows`);
 
-									previousRowsLength = i;
+								previousRowsLength = i;
 
-									if (previousRowsLength !== previousRows.length) {
-										// If we stopped before the end of the array, we need to trim it
-										rows.length = previousRowsLength + newRowsLength;
-									}
-
-									break;
+								if (previousRowsLength !== previousRows.length) {
+									// If we stopped before the end of the array, we need to trim it
+									rows.length = previousRowsLength + newRowsLength;
 								}
-							}
-						} else {
-							for (let i = 0; i < previousRowsLength; i++) {
-								rows[i] = previousRows[i];
-							}
-						}
 
-						for (let i = 0; i < newRowsLength; i++) {
-							rows[previousRowsLength + i] = params.rows[i];
+								break;
+							}
 						}
 					} else {
-						this.log(`onMessageReceived(${msg.id}:${msg.method}): setting to ${params.rows.length} rows`);
-
-						if (params.rows.length === 0) {
-							rows = this.state.rows;
-						} else {
-							rows = params.rows;
+						for (let i = 0; i < previousRowsLength; i++) {
+							rows[i] = previousRows[i];
 						}
 					}
 
-					this.state.avatars = params.avatars;
-					if (params.refsMetadata !== undefined) {
-						this.state.refsMetadata = params.refsMetadata;
+					for (let i = 0; i < newRowsLength; i++) {
+						rows[previousRowsLength + i] = msg.params.rows[i];
 					}
-					this.state.rows = rows;
-					this.state.paging = params.paging;
-					if (params.selectedRows != null) {
-						this.state.selectedRows = params.selectedRows;
+				} else {
+					this.log(scope, `setting to ${msg.params.rows.length} rows`);
+
+					if (msg.params.rows.length === 0) {
+						rows = this.state.rows;
+					} else {
+						rows = msg.params.rows;
 					}
-					this.state.loading = false;
-					this.setState(this.state, type);
-				});
+				}
+
+				this.state.avatars = msg.params.avatars;
+				this.state.downstreams = msg.params.downstreams;
+				if (msg.params.refsMetadata !== undefined) {
+					this.state.refsMetadata = msg.params.refsMetadata;
+				}
+				this.state.rows = rows;
+				this.state.paging = msg.params.paging;
+				if (msg.params.rowsStats != null) {
+					this.state.rowsStats = { ...this.state.rowsStats, ...msg.params.rowsStats };
+				}
+				this.state.rowsStatsLoading = msg.params.rowsStatsLoading;
+				if (msg.params.selectedRows != null) {
+					this.state.selectedRows = msg.params.selectedRows;
+				}
+				this.state.loading = false;
+				this.setState(this.state, DidChangeRowsNotification);
+
+				setLogScopeExit(scope, ` \u2022 rows=${this.state.rows?.length ?? 0}`);
+				break;
+			}
+			case DidChangeRowsStatsNotification.is(msg):
+				this.state.rowsStats = { ...this.state.rowsStats, ...msg.params.rowsStats };
+				this.state.rowsStatsLoading = msg.params.rowsStatsLoading;
+				this.setState(this.state, DidChangeRowsStatsNotification);
 				break;
 
-			case DidSearchNotificationType.method:
-				onIpc(DidSearchNotificationType, msg, (params, type) => {
-					this.state.searchResults = params.results;
-					if (params.selectedRows != null) {
-						this.state.selectedRows = params.selectedRows;
-					}
-					this.setState(this.state, type);
-				});
+			case DidChangeScrollMarkersNotification.is(msg):
+				this.state.context = { ...this.state.context, settings: msg.params.context };
+				this.setState(this.state, DidChangeScrollMarkersNotification);
 				break;
 
-			case DidChangeSelectionNotificationType.method:
-				onIpc(DidChangeSelectionNotificationType, msg, (params, type) => {
-					this.state.selectedRows = params.selection;
-					this.setState(this.state, type);
-				});
+			case DidSearchNotification.is(msg):
+				this.updateSearchResultState(msg.params);
 				break;
 
-			case DidChangeGraphConfigurationNotificationType.method:
-				onIpc(DidChangeGraphConfigurationNotificationType, msg, (params, type) => {
-					this.state.config = params.config;
-					this.setState(this.state, type);
-				});
+			case DidChangeSelectionNotification.is(msg):
+				this.state.selectedRows = msg.params.selection;
+				this.setState(this.state, DidChangeSelectionNotification);
 				break;
 
-			case DidChangeSubscriptionNotificationType.method:
-				onIpc(DidChangeSubscriptionNotificationType, msg, (params, type) => {
-					this.state.subscription = params.subscription;
-					this.state.allowed = params.allowed;
-					this.setState(this.state, type);
-				});
+			case DidChangeGraphConfigurationNotification.is(msg):
+				this.state.config = msg.params.config;
+				this.setState(this.state, DidChangeGraphConfigurationNotification);
 				break;
 
-			case DidChangeWorkingTreeNotificationType.method:
-				onIpc(DidChangeWorkingTreeNotificationType, msg, (params, type) => {
-					this.state.workingTreeStats = params.stats;
-					this.setState(this.state, type);
-				});
+			case DidChangeSubscriptionNotification.is(msg):
+				this.state.subscription = msg.params.subscription;
+				this.state.allowed = msg.params.allowed;
+				this.setState(this.state, DidChangeSubscriptionNotification);
+				break;
+
+			case DidChangeWorkingTreeNotification.is(msg):
+				this.state.workingTreeStats = msg.params.stats;
+				this.setState(this.state, DidChangeWorkingTreeNotification);
 				break;
 
 			default:
-				super.onMessageReceived?.(e);
+				super.onMessageReceived?.(msg);
 		}
 	}
 
 	protected override onThemeUpdated(e: ThemeChangeEvent) {
-		const bodyStyle = document.body.style;
-		bodyStyle.setProperty('--graph-theme-opacity-factor', e.isLightTheme ? '0.5' : '1');
-
-		bodyStyle.setProperty(
-			'--color-graph-actionbar-background',
-			e.isLightTheme ? darken(e.colors.background, 5) : lighten(e.colors.background, 5),
-		);
-		bodyStyle.setProperty(
-			'--color-graph-actionbar-selectedBackground',
-			e.isLightTheme ? darken(e.colors.background, 10) : lighten(e.colors.background, 10),
-		);
-
-		bodyStyle.setProperty(
-			'--color-graph-background',
-			e.isLightTheme ? darken(e.colors.background, 5) : lighten(e.colors.background, 5),
-		);
-		bodyStyle.setProperty(
-			'--color-graph-background2',
-			e.isLightTheme ? darken(e.colors.background, 10) : lighten(e.colors.background, 10),
-		);
-
-		const color = e.computedStyle.getPropertyValue('--color-graph-text-selected-row').trim();
-		bodyStyle.setProperty('--color-graph-text-dimmed-selected', opacity(color, 50));
-		bodyStyle.setProperty('--color-graph-text-dimmed', opacity(e.colors.foreground, 20));
-
-		bodyStyle.setProperty('--color-graph-text-normal', opacity(e.colors.foreground, 85));
-		bodyStyle.setProperty('--color-graph-text-secondary', opacity(e.colors.foreground, 65));
-		bodyStyle.setProperty('--color-graph-text-disabled', opacity(e.colors.foreground, 50));
+		const rootStyle = document.documentElement.style;
 
 		const backgroundColor = Color.from(e.colors.background);
 		const foregroundColor = Color.from(e.colors.foreground);
@@ -375,120 +329,71 @@ export class GraphApp extends App<State> {
 
 		// minimap and scroll markers
 
-		let c = Color.fromCssVariable('--color-graph-minimap-visibleAreaBackground', e.computedStyle);
-		bodyStyle.setProperty(
+		let c = Color.fromCssVariable('--vscode-scrollbarSlider-background', e.computedStyle);
+		rootStyle.setProperty(
 			'--color-graph-minimap-visibleAreaBackground',
 			c.luminance(themeLuminance(e.isLightTheme ? 0.6 : 0.1)).toString(),
 		);
 
 		if (!e.isLightTheme) {
-			c = Color.fromCssVariable('--color-graph-minimap-tip-headForeground', e.computedStyle);
-			bodyStyle.setProperty('--color-graph-minimap-tip-headForeground', c.opposite().toString());
+			c = Color.fromCssVariable('--color-graph-scroll-marker-local-branches', e.computedStyle);
+			rootStyle.setProperty(
+				'--color-graph-minimap-tip-branchBackground',
+				c.luminance(themeLuminance(0.55)).toString(),
+			);
 
-			c = Color.fromCssVariable('--color-graph-minimap-tip-upstreamForeground', e.computedStyle);
-			bodyStyle.setProperty('--color-graph-minimap-tip-upstreamForeground', c.opposite().toString());
+			c = Color.fromCssVariable('--color-graph-scroll-marker-local-branches', e.computedStyle);
+			rootStyle.setProperty(
+				'--color-graph-minimap-tip-branchBorder',
+				c.luminance(themeLuminance(0.55)).toString(),
+			);
 
-			c = Color.fromCssVariable('--color-graph-minimap-tip-branchForeground', e.computedStyle);
-			bodyStyle.setProperty('--color-graph-minimap-tip-branchForeground', c.opposite().toString());
+			c = Color.fromCssVariable('--vscode-editor-foreground', e.computedStyle);
+			const tipForeground = c.isLighter() ? c.luminance(0.01).toString() : c.luminance(0.99).toString();
+			rootStyle.setProperty('--color-graph-minimap-tip-headForeground', tipForeground);
+			rootStyle.setProperty('--color-graph-minimap-tip-upstreamForeground', tipForeground);
+			rootStyle.setProperty('--color-graph-minimap-tip-highlightForeground', tipForeground);
+			rootStyle.setProperty('--color-graph-minimap-tip-branchForeground', tipForeground);
 		}
 
-		// const highlightsColor = Color.from(
-		// 	e.computedStyle.getPropertyValue('--color-graph-scroll-marker-highlights').trim(),
-		// );
-		// const branchColor = Color.from(
-		// 	e.computedStyle.getPropertyValue('--color-graph-scroll-marker-local-branches').trim(),
-		// );
-		// const remoteBranchColor = Color.from(
-		// 	e.computedStyle.getPropertyValue('--color-graph-scroll-marker-remote-branches').trim(),
-		// );
-		// const stashColor = Color.from(e.computedStyle.getPropertyValue('--color-graph-scroll-marker-stashes').trim());
-		// const tagColor = Color.from(e.computedStyle.getPropertyValue('--color-graph-scroll-marker-tags').trim());
+		const branchStatusLuminance = themeLuminance(e.isLightTheme ? 0.72 : 0.064);
+		const branchStatusHoverLuminance = themeLuminance(e.isLightTheme ? 0.64 : 0.076);
+		const branchStatusPillLuminance = themeLuminance(e.isLightTheme ? 0.92 : 0.02);
+		// branch status ahead
+		c = Color.fromCssVariable('--branch-status-ahead-foreground', e.computedStyle);
+		rootStyle.setProperty('--branch-status-ahead-background', c.luminance(branchStatusLuminance).toString());
+		rootStyle.setProperty(
+			'--branch-status-ahead-hover-background',
+			c.luminance(branchStatusHoverLuminance).toString(),
+		);
+		rootStyle.setProperty(
+			'--branch-status-ahead-pill-background',
+			c.luminance(branchStatusPillLuminance).toString(),
+		);
 
-		// color = e.computedStyle.getPropertyValue('--vscode-progressBar-background').trim();
-		// const activityColor = Color.from(color);
-		// bodyStyle.setProperty('--color-graph-minimap-line0', activityColor.luminance(themeLuminance(0.5)).toString());
+		// branch status behind
+		c = Color.fromCssVariable('--branch-status-behind-foreground', e.computedStyle);
+		rootStyle.setProperty('--branch-status-behind-background', c.luminance(branchStatusLuminance).toString());
+		rootStyle.setProperty(
+			'--branch-status-behind-hover-background',
+			c.luminance(branchStatusHoverLuminance).toString(),
+		);
+		rootStyle.setProperty(
+			'--branch-status-behind-pill-background',
+			c.luminance(branchStatusPillLuminance).toString(),
+		);
 
-		// bodyStyle.setProperty(
-		// 	'--color-graph-minimap-focusLine',
-		// 	backgroundColor.luminance(themeLuminance(e.isLightTheme ? 0.6 : 0.2)).toString(),
-		// );
-
-		// color = e.computedStyle.getPropertyValue('--vscode-scrollbarSlider-background').trim();
-		// bodyStyle.setProperty(
-		// 	'--color-graph-minimap-visibleAreaBackground',
-		// 	Color.from(color)
-		// 		.luminance(themeLuminance(e.isLightTheme ? 0.6 : 0.15))
-		// 		.toString(),
-		// );
-
-		// bodyStyle.setProperty(
-		// 	'--color-graph-scroll-marker-highlights',
-		// 	highlightsColor.luminance(themeLuminance(e.isLightTheme ? 0.6 : 1.0)).toString(),
-		// );
-
-		// const pillLabel = foregroundColor.luminance(themeLuminance(e.isLightTheme ? 0 : 1)).toString();
-		// const headBackground = headColor.luminance(themeLuminance(e.isLightTheme ? 0.9 : 0.2)).toString();
-		// const headBorder = headColor.luminance(themeLuminance(e.isLightTheme ? 0.2 : 0.4)).toString();
-		// const headMarker = headColor.luminance(themeLuminance(0.5)).toString();
-
-		// bodyStyle.setProperty('--color-graph-minimap-headBackground', headBackground);
-		// bodyStyle.setProperty('--color-graph-minimap-headBorder', headBorder);
-		// bodyStyle.setProperty('--color-graph-minimap-headForeground', pillLabel);
-
-		// bodyStyle.setProperty('--color-graph-scroll-marker-head', opacity(headMarker, 90));
-
-		// bodyStyle.setProperty('--color-graph-minimap-upstreamBackground', headBackground);
-		// bodyStyle.setProperty('--color-graph-minimap-upstreamBorder', headBorder);
-		// bodyStyle.setProperty('--color-graph-minimap-upstreamForeground', pillLabel);
-		// bodyStyle.setProperty('--color-graph-scroll-marker-upstream', opacity(headMarker, 60));
-
-		// const branchBackground = branchColor.luminance(themeLuminance(e.isLightTheme ? 0.8 : 0.3)).toString();
-		// const branchBorder = branchColor.luminance(themeLuminance(e.isLightTheme ? 0.2 : 0.4)).toString();
-		// const branchMarker = branchColor.luminance(themeLuminance(e.isLightTheme ? 0.2 : 0.6)).toString();
-
-		// bodyStyle.setProperty('--color-graph-minimap-branchBackground', branchBackground);
-		// bodyStyle.setProperty('--color-graph-minimap-branchBorder', branchBorder);
-		// bodyStyle.setProperty('--color-graph-minimap-branchForeground', pillLabel);
-		// bodyStyle.setProperty('--color-graph-scroll-marker-local-branches', opacity(branchMarker, 90));
-
-		// const remoteBranchBackground = remoteBranchColor
-		// 	.luminance(themeLuminance(e.isLightTheme ? 0.8 : 0.3))
-		// 	.toString();
-		// const remoteBranchBorder = remoteBranchColor.luminance(themeLuminance(e.isLightTheme ? 0.2 : 0.4)).toString();
-		// const remoteBranchMarker = remoteBranchColor.luminance(themeLuminance(e.isLightTheme ? 0.3 : 0.6)).toString();
-
-		// bodyStyle.setProperty('--color-graph-minimap-remoteBackground', opacity(remoteBranchBackground, 80));
-		// bodyStyle.setProperty('--color-graph-minimap-remoteBorder', opacity(remoteBranchBorder, 80));
-		// bodyStyle.setProperty('--color-graph-minimap-remoteForeground', pillLabel);
-		// bodyStyle.setProperty('--color-graph-scroll-marker-remote-branches', opacity(remoteBranchMarker, 70));
-
-		// bodyStyle.setProperty(
-		// 	'--color-graph-minimap-stashBackground',
-		// 	stashColor.luminance(themeLuminance(e.isLightTheme ? 0.8 : 0.2)).toString(),
-		// );
-		// bodyStyle.setProperty(
-		// 	'--color-graph-minimap-stashBorder',
-		// 	stashColor.luminance(themeLuminance(e.isLightTheme ? 0.2 : 0.4)).toString(),
-		// );
-		// bodyStyle.setProperty('--color-graph-minimap-stashForeground', pillLabel);
-		// bodyStyle.setProperty(
-		// 	'--color-graph-scroll-marker-stashes',
-		// 	opacity(stashColor.luminance(themeLuminance(e.isLightTheme ? 0.5 : 0.9)).toString(), 90),
-		// );
-
-		// bodyStyle.setProperty(
-		// 	'--color-graph-minimap-tagBackground',
-		// 	tagColor.luminance(themeLuminance(e.isLightTheme ? 0.8 : 0.2)).toString(),
-		// );
-		// bodyStyle.setProperty(
-		// 	'--color-graph-minimap-tagBorder',
-		// 	tagColor.luminance(themeLuminance(e.isLightTheme ? 0.2 : 0.4)).toString(),
-		// );
-		// bodyStyle.setProperty('--color-graph-minimap-tagForeground', pillLabel);
-		// bodyStyle.setProperty(
-		// 	'--color-graph-scroll-marker-tags',
-		// 	opacity(tagColor.luminance(themeLuminance(e.isLightTheme ? 0.3 : 0.5)).toString(), 60),
-		// );
+		// branch status both
+		c = Color.fromCssVariable('--branch-status-both-foreground', e.computedStyle);
+		rootStyle.setProperty('--branch-status-both-background', c.luminance(branchStatusLuminance).toString());
+		rootStyle.setProperty(
+			'--branch-status-both-hover-background',
+			c.luminance(branchStatusHoverLuminance).toString(),
+		);
+		rootStyle.setProperty(
+			'--branch-status-both-pill-background',
+			c.luminance(branchStatusPillLuminance).toString(),
+		);
 
 		if (e.isInitializing) return;
 
@@ -496,15 +401,14 @@ export class GraphApp extends App<State> {
 		this.setState(this.state, 'didChangeTheme');
 	}
 
-	protected override setState(state: State, type?: IpcNotificationType<any> | InternalNotificationType) {
-		this.log(`setState()`);
+	@debug({ args: false, singleLine: true })
+	protected override setState(state: State, type?: IpcNotification<any> | InternalNotificationType) {
 		const themingChanged = this.ensureTheming(state);
 
-		// Avoid calling the base for now, since we aren't using the vscode state
 		this.state = state;
-		// super.setState(state);
+		super.setState({ timestamp: state.timestamp, selectedRepository: state.selectedRepository });
 
-		this.callback?.(this.state, type, themingChanged);
+		this.updateStateCallback?.(this.state, type, themingChanged);
 	}
 
 	private ensureTheming(state: State): boolean {
@@ -517,15 +421,15 @@ export class GraphApp extends App<State> {
 
 	private getGraphTheming(): { cssVariables: CssVariables; themeOpacityFactor: number } {
 		// this will be called on theme updated as well as on config updated since it is dependent on the column colors from config changes and the background color from the theme
-		const computedStyle = window.getComputedStyle(document.body);
-		const bgColor = computedStyle.getPropertyValue('--color-background');
+		const computedStyle = window.getComputedStyle(document.documentElement);
+		const bgColor = getCssVariable('--color-background', computedStyle);
 
 		const mixedGraphColors: CssVariables = {};
 
 		let i = 0;
 		let color;
 		for (const [colorVar, colorDefault] of graphLaneThemeColors) {
-			color = computedStyle.getPropertyValue(colorVar) || colorDefault;
+			color = getCssVariable(colorVar, computedStyle) || colorDefault;
 
 			mixedGraphColors[`--column-${i}-color`] = color;
 
@@ -540,67 +444,89 @@ export class GraphApp extends App<State> {
 			i++;
 		}
 
-		const isHighContrastTheme = document.body.classList.contains('vscode-high-contrast');
+		const isHighContrastTheme =
+			document.body.classList.contains('vscode-high-contrast') ||
+			document.body.classList.contains('vscode-high-contrast-light');
 
 		return {
 			cssVariables: {
 				'--app__bg0': bgColor,
-				'--panel__bg0': computedStyle.getPropertyValue('--color-graph-background'),
-				'--panel__bg1': computedStyle.getPropertyValue('--color-graph-background2'),
-				'--section-border': computedStyle.getPropertyValue('--color-graph-background2'),
+				'--panel__bg0': getCssVariable('--color-graph-background', computedStyle),
+				'--panel__bg1': getCssVariable('--color-graph-background2', computedStyle),
+				'--section-border': getCssVariable('--color-graph-background2', computedStyle),
 
-				'--selected-row': computedStyle.getPropertyValue('--color-graph-selected-row'),
+				'--selected-row': getCssVariable('--color-graph-selected-row', computedStyle),
 				'--selected-row-border': isHighContrastTheme
-					? `1px solid ${computedStyle.getPropertyValue('--color-graph-contrast-border')}`
+					? `1px solid ${getCssVariable('--color-graph-contrast-border', computedStyle)}`
 					: 'none',
-				'--hover-row': computedStyle.getPropertyValue('--color-graph-hover-row'),
+				'--hover-row': getCssVariable('--color-graph-hover-row', computedStyle),
 				'--hover-row-border': isHighContrastTheme
-					? `1px dashed ${computedStyle.getPropertyValue('--color-graph-contrast-border')}`
+					? `1px dashed ${getCssVariable('--color-graph-contrast-border', computedStyle)}`
 					: 'none',
 
-				'--text-selected': computedStyle.getPropertyValue('--color-graph-text-selected'),
-				'--text-selected-row': computedStyle.getPropertyValue('--color-graph-text-selected-row'),
-				'--text-hovered': computedStyle.getPropertyValue('--color-graph-text-hovered'),
-				'--text-dimmed-selected': computedStyle.getPropertyValue('--color-graph-text-dimmed-selected'),
-				'--text-dimmed': computedStyle.getPropertyValue('--color-graph-text-dimmed'),
-				'--text-normal': computedStyle.getPropertyValue('--color-graph-text-normal'),
-				'--text-secondary': computedStyle.getPropertyValue('--color-graph-text-secondary'),
-				'--text-disabled': computedStyle.getPropertyValue('--color-graph-text-disabled'),
+				'--scrollable-scrollbar-thickness': getCssVariable('--graph-column-scrollbar-thickness', computedStyle),
+				'--scroll-thumb-bg': getCssVariable('--vscode-scrollbarSlider-background', computedStyle),
 
-				'--text-accent': computedStyle.getPropertyValue('--color-link-foreground'),
-				'--text-inverse': computedStyle.getPropertyValue('--vscode-input-background'),
-				'--text-bright': computedStyle.getPropertyValue('--vscode-input-background'),
+				'--scroll-marker-head-color': getCssVariable('--color-graph-scroll-marker-head', computedStyle),
+				'--scroll-marker-upstream-color': getCssVariable('--color-graph-scroll-marker-upstream', computedStyle),
+				'--scroll-marker-highlights-color': getCssVariable(
+					'--color-graph-scroll-marker-highlights',
+					computedStyle,
+				),
+				'--scroll-marker-local-branches-color': getCssVariable(
+					'--color-graph-scroll-marker-local-branches',
+					computedStyle,
+				),
+				'--scroll-marker-remote-branches-color': getCssVariable(
+					'--color-graph-scroll-marker-remote-branches',
+					computedStyle,
+				),
+				'--scroll-marker-stashes-color': getCssVariable('--color-graph-scroll-marker-stashes', computedStyle),
+				'--scroll-marker-tags-color': getCssVariable('--color-graph-scroll-marker-tags', computedStyle),
+				'--scroll-marker-selection-color': getCssVariable(
+					'--color-graph-scroll-marker-selection',
+					computedStyle,
+				),
+
+				'--stats-added-color': getCssVariable('--color-graph-stats-added', computedStyle),
+				'--stats-deleted-color': getCssVariable('--color-graph-stats-deleted', computedStyle),
+				'--stats-files-color': getCssVariable('--color-graph-stats-files', computedStyle),
+				'--stats-bar-border-radius': getCssVariable('--graph-stats-bar-border-radius', computedStyle),
+				'--stats-bar-height': getCssVariable('--graph-stats-bar-height', computedStyle),
+
+				'--text-selected': getCssVariable('--color-graph-text-selected', computedStyle),
+				'--text-selected-row': getCssVariable('--color-graph-text-selected-row', computedStyle),
+				'--text-hovered': getCssVariable('--color-graph-text-hovered', computedStyle),
+				'--text-dimmed-selected': getCssVariable('--color-graph-text-dimmed-selected', computedStyle),
+				'--text-dimmed': getCssVariable('--color-graph-text-dimmed', computedStyle),
+				'--text-normal': getCssVariable('--color-graph-text-normal', computedStyle),
+				'--text-secondary': getCssVariable('--color-graph-text-secondary', computedStyle),
+				'--text-disabled': getCssVariable('--color-graph-text-disabled', computedStyle),
+
+				'--text-accent': getCssVariable('--color-link-foreground', computedStyle),
+				'--text-inverse': getCssVariable('--vscode-input-background', computedStyle),
+				'--text-bright': getCssVariable('--vscode-input-background', computedStyle),
 				...mixedGraphColors,
 			},
-			themeOpacityFactor: parseInt(computedStyle.getPropertyValue('--graph-theme-opacity-factor')) || 1,
+			themeOpacityFactor: parseInt(getCssVariable('--graph-theme-opacity-factor', computedStyle)) || 1,
 		};
 	}
 
-	private onDismissBanner(key: DismissBannerParams['key']) {
-		this.sendCommand(DismissBannerCommandType, { key: key });
-	}
-
 	private onColumnsChanged(settings: GraphColumnsConfig) {
-		this.sendCommand(UpdateColumnsCommandType, {
+		this.sendCommand(UpdateColumnsCommand, {
 			config: settings,
 		});
 	}
 
 	private onRefsVisibilityChanged(refs: GraphExcludedRef[], visible: boolean) {
-		this.sendCommand(UpdateRefsVisibilityCommandType, {
+		this.sendCommand(UpdateRefsVisibilityCommand, {
 			refs: refs,
 			visible: visible,
 		});
 	}
 
 	private onChooseRepository() {
-		this.sendCommand(ChooseRepositoryCommandType, undefined);
-	}
-
-	private onDimMergeCommits(dim: boolean) {
-		this.sendCommand(DimMergeCommitsCommandType, {
-			dim: dim,
-		});
+		this.sendCommand(ChooseRepositoryCommand, undefined);
 	}
 
 	private onDoubleClickRef(ref: GraphRef, metadata?: GraphRefMetadataItem) {
@@ -619,81 +545,104 @@ export class GraphApp extends App<State> {
 		});
 	}
 
+	private async onHoverRowPromise(row: GraphRow) {
+		try {
+			return await this.sendRequest(GetRowHoverRequest, { type: row.type as GitGraphRowType, id: row.sha });
+		} catch {
+			return undefined;
+		}
+	}
+
 	private onGetMissingAvatars(emails: GraphAvatars) {
-		this.sendCommand(GetMissingAvatarsCommandType, { emails: emails });
+		this.sendCommand(GetMissingAvatarsCommand, { emails: emails });
 	}
 
 	private onGetMissingRefsMetadata(metadata: GraphMissingRefsMetadata) {
-		this.sendCommand(GetMissingRefsMetadataCommandType, { metadata: metadata });
+		this.sendCommand(GetMissingRefsMetadataCommand, { metadata: metadata });
 	}
 
 	private onGetMoreRows(sha?: string) {
-		return this.sendCommand(GetMoreRowsCommandType, { id: sha });
+		this.sendCommand(GetMoreRowsCommand, { id: sha });
 	}
 
-	private onSearch(search: SearchQuery | undefined, options?: { limit?: number }) {
+	onOpenPullRequest(pr: NonNullable<NonNullable<State['branchState']>['pr']>): void {
+		this.sendCommand(OpenPullRequestDetailsCommand, { id: pr.id });
+	}
+
+	private async onSearch(search: SearchQuery | undefined, options?: { limit?: number }) {
 		if (search == null) {
 			this.state.searchResults = undefined;
 		}
-		return this.sendCommand(SearchCommandType, { search: search, limit: options?.limit });
+		try {
+			const rsp = await this.sendRequest(SearchRequest, { search: search, limit: options?.limit });
+			this.updateSearchResultState(rsp);
+		} catch {
+			this.state.searchResults = undefined;
+		}
 	}
 
 	private async onSearchPromise(search: SearchQuery, options?: { limit?: number; more?: boolean }) {
 		try {
-			return await this.sendCommandWithCompletion(
-				SearchCommandType,
-				{ search: search, limit: options?.limit, more: options?.more },
-				DidSearchNotificationType,
-			);
+			const rsp = await this.sendRequest(SearchRequest, {
+				search: search,
+				limit: options?.limit,
+				more: options?.more,
+			});
+			this.updateSearchResultState(rsp);
+			return rsp;
 		} catch {
 			return undefined;
 		}
 	}
 
 	private onSearchOpenInView(search: SearchQuery) {
-		this.sendCommand(SearchOpenInViewCommandType, { search: search });
+		this.sendCommand(SearchOpenInViewCommand, { search: search });
 	}
 
 	private async onEnsureRowPromise(id: string, select: boolean) {
 		try {
-			return await this.sendCommandWithCompletion(
-				EnsureRowCommandType,
-				{ id: id, select: select },
-				DidEnsureRowNotificationType,
-			);
+			return await this.sendRequest(EnsureRowRequest, { id: id, select: select });
 		} catch {
 			return undefined;
 		}
 	}
 
 	private onExcludeType(key: keyof GraphExcludeTypes, value: boolean) {
-		this.sendCommand(UpdateExcludeTypeCommandType, { key: key, value: value });
+		this.sendCommand(UpdateExcludeTypeCommand, { key: key, value: value });
 	}
 
 	private onIncludeOnlyRef(all?: boolean) {
 		this.sendCommand(
-			UpdateIncludeOnlyRefsCommandType,
+			UpdateIncludeOnlyRefsCommand,
 			all ? {} : { refs: [{ id: 'HEAD', type: 'head', name: 'HEAD' }] },
 		);
 	}
 
 	private onUpdateGraphConfiguration(changes: UpdateGraphConfigurationParams['changes']) {
-		this.sendCommand(UpdateGraphConfigurationCommandType, { changes: changes });
+		this.sendCommand(UpdateGraphConfigurationCommand, { changes: changes });
 	}
 
 	private onSelectionChanged(rows: GraphRow[]) {
-		const selection = rows.map(r => ({ id: r.sha, type: r.type as GitGraphRowType }));
-		this.sendCommand(UpdateSelectionCommandType, {
+		const selection = rows.filter(r => r != null).map(r => ({ id: r.sha, type: r.type as GitGraphRowType }));
+		this.sendCommand(UpdateSelectionCommand, {
 			selection: selection,
 		});
 	}
 
-	private registerEvents(callback: UpdateStateCallback): () => void {
-		this.callback = callback;
+	private registerUpdateStateCallback(updateState: UpdateStateCallback): () => void {
+		this.updateStateCallback = updateState;
 
 		return () => {
-			this.callback = undefined;
+			this.updateStateCallback = undefined;
 		};
+	}
+
+	private updateSearchResultState(params: DidSearchParams) {
+		this.state.searchResults = params.results;
+		if (params.selectedRows != null) {
+			this.state.selectedRows = params.selectedRows;
+		}
+		this.setState(this.state, DidSearchNotification);
 	}
 }
 

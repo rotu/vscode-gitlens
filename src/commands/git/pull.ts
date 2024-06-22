@@ -19,15 +19,9 @@ import type {
 	StepSelection,
 	StepState,
 } from '../quickCommand';
-import {
-	appendReposToTitle,
-	canPickStepContinue,
-	endSteps,
-	FetchQuickInputButton,
-	pickRepositoriesStep,
-	QuickCommand,
-	StepResultBreak,
-} from '../quickCommand';
+import { canPickStepContinue, endSteps, QuickCommand, StepResultBreak } from '../quickCommand';
+import { FetchQuickInputButton } from '../quickCommand.buttons';
+import { appendReposToTitle, pickRepositoriesStep } from '../quickCommand.steps';
 
 interface Context {
 	repos: Repository[];
@@ -107,7 +101,9 @@ export class PullGitCommand extends QuickCommand<State> {
 				skippedStepOne = false;
 				if (context.repos.length === 1) {
 					skippedStepOne = true;
-					state.counter++;
+					if (state.repos == null) {
+						state.counter++;
+					}
 
 					state.repos = [context.repos[0]];
 				} else {
@@ -151,12 +147,12 @@ export class PullGitCommand extends QuickCommand<State> {
 			step = this.createConfirmStep(appendReposToTitle(`Confirm ${context.title}`, state, context), [
 				createFlagsQuickPickItem<Flags>(state.flags, [], {
 					label: this.title,
-					detail: `Will pull ${state.repos.length} repositories`,
+					detail: `Will pull ${state.repos.length} repos`,
 				}),
 				createFlagsQuickPickItem<Flags>(state.flags, ['--rebase'], {
 					label: `${this.title} with Rebase`,
 					description: '--rebase',
-					detail: `Will pull ${state.repos.length} repositories by rebasing`,
+					detail: `Will pull ${state.repos.length} repos by rebasing`,
 				}),
 			]);
 		} else if (isBranchReference(state.reference)) {
